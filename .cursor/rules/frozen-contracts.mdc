@@ -1,0 +1,39 @@
+---
+description: IT Helpdesk Agent 冻结契约(implementation_guide.md §8 禁止修改事项)
+alwaysApply: true
+---
+
+# 冻结契约(禁止修改事项)
+
+## 元规则(最高优先级)
+
+- 实现细节以 `docs/implementation_guide.md` 为准。发现代码需求与其冲突、或文档内部矛盾时,**先停下来问用户**,不允许在代码里临场发明或自行裁决。
+- **禁止参考** `docs/mvp_plan.md`(v1)、`architecture.md`、`review.md`——它们含大量已废弃设计(6 LLM 节点、8 工具、R1–R5、events 表、substitutes)。契约细节仅可查 `docs/mvp_plan_v3.1.md`。
+- 设计变更零容忍。工时溢出按 guide §5 cut ladder 顺序砍;发现设计缺口先回文档修订,不在代码里裁决。
+
+## 五条总约束
+
+1. **不增加 Agent**:节点恒为 5 LLM + 4 代码 + 1 共享 classifier;handler 不升格为节点。
+2. **不增加数据库表**:SQLite 仅 `cases` 单表;不建 events 表(事件由 trace JSONL 承载)。
+3. **不增加工具**:6 只读 + 2 写;不做 `submit_access_request` / `clear_idp_sessions` / `page_oncall` / `lookup_colleague` / `search_resolution_history`。
+4. **不改变状态机**:7 个 phase、6 行恢复路由表、decide 门序(guide §4.1)、三段写协议,一律按 guide 冻结版。
+5. **不优化架构**:不引入 LangGraph / Embedding / 向量库 / Web / SSE / webhook / TTL / 乐观锁 / 熔断 / effects outbox 对账。
+
+## 契约级禁改条款
+
+- `decide()` 必须保持纯函数:零 IO、零 LLM、无副作用;**E4 永不回到 decide**(E4 承载在 runner 层:快照→异常→回滚→直升 escalate,reason=SYSTEM_ERROR);不为 decide 发明 `system_error` 之类字段。
+- 字段单一所有权表(guide §3)不可破坏;`actor` / `evidence` / `pending_action` 三处运行时 assert 必须在。
+- `issue.verbatim` 写入者是 **ingress**(不是 intake);`user_requested_human` 是棘轮,任何代码不得回退为 false。
+- **只有显式 YES 消费 pending_action**;写工具永不出现在模型工具列表;任何工具签名不得出现 `target_user` / `user_id` 参数。
+- args 由 ActionBuilder 代码冻结,模型只提 intent;FREEZE 的 declined intent 前置检查不可绕过。
+- resource 枚举唯一来源是 `config/policy.yaml`;intake 只能输出枚举值或 `other`。
+- eval runner 只支持 4 个断言 key,**零特例分支**;禁止为任何 golden case 加 runner 特例。
+- 矛盾检测 / 否定匹配 / 转人工词表 / 一致性检查全部是确定性代码,**不得改由 LLM 判定**。
+- `resolution_attempts` 由 runner 计数,guard 节点内重试不计数。
+- ESCALATED 经用户确认关闭时:phase=CLOSED,**outcome 保持 ESCALATED**(指标在建单时刻归因)。
+- readiness/confidence 不参与安全判定:不做加权分、不做三档 band、不做 thresholds.yaml。
+- 老编号不复用:E4 空缺保留(注释标注"已迁移至 runner"),E5–E10 不重编号;R 门恒为 3 条(R1–R3)。
+
+## 明确不做清单(README 已知缺口,不是待办)
+
+崩溃恢复对账、乐观锁/并发合并、工具熔断、7 天 TTL、人工侧 webhook、附件处理、跨会话记忆、LLM-as-Judge 门禁、同轮双结论、ABANDONED 建模、Output Guard 内容蕴含检查、SMALL 兜底之外的隐晦转人工识别。
