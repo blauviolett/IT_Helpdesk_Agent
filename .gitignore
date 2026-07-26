@@ -7,8 +7,12 @@ docs/coding_workflow.md
 docs/workflow.md
 # 常规
 .env
+.venv/
+*.egg-info/
+traces/
 __pycache__/
 *.pyc
 .pytest_cache/
 eval/results/
+!eval/results/latest.md
 *.db

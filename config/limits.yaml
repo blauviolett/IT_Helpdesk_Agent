@@ -1,0 +1,6 @@
+# 预算上限(guide §4.1 L2 E5;由 decide 消费,预算拦截器 D3 接线)
+# 任一触顶 → ESCALATE(BUDGET_EXHAUSTED)
+tool_calls_max: 10
+turns_max: 8
+llm_cost_usd_max: 0.10
+elapsed_sec_max: 180

@@ -1,0 +1,35 @@
+# policy.yaml — 策略 + 资源枚举唯一来源(guide §2 / v3.1 P1-4)
+# D1 骨架:resources 枚举 + 队列 + 定级矩阵。
+# 4 条 deny-by-default 规则与队列字段 allowlist 按计划在 D3/D4 填入。
+
+# resource 枚举唯一来源(v3.1 P1-4 原文钉死)。
+# intake prompt 的枚举值域 = 此处键 + "other";"other" 不触发 E2。
+resources:
+  snowflake_prod:
+    aliases: ["snowflake production", "snowflake prod", "snowflake 生产库"]
+    decision: DENY_REQUIRE_HUMAN
+    queue: data-platform-approvers
+  grafana_dashboards:
+    aliases: ["grafana", "grafana dashboards", "内部监控看板"]
+    decision: ALLOW          # 已有 viewer 权限时由升级消息说明
+
+# 3 个队列(字段 allowlist D4 填入)
+queues:
+  - it-helpdesk
+  - data-platform-approvers
+  - security-ir
+
+# 定级:scope → impact 映射 + impact × urgency 9 格查表(v2.1 §1.5 E3)。
+# 约束:TEAM × MEDIUM → P3(test_gates 钉死);个人(INDIVIDUAL)deadline 上限 P2,
+# 即个人案例无论多急不产生 P1(代码里显式 clamp)。
+priority:
+  scope_to_impact:
+    INDIVIDUAL: LOW
+    TEAM: MEDIUM
+    ORG: HIGH
+  matrix:            # matrix[impact][urgency] -> priority
+    HIGH:   { HIGH: P1, MEDIUM: P2, LOW: P3 }
+    MEDIUM: { HIGH: P2, MEDIUM: P3, LOW: P4 }
+    LOW:    { HIGH: P2, MEDIUM: P3, LOW: P4 }
+
+# rules: 4 条 deny-by-default 授权规则 —— D3 policy.py 时填入(此处留位,不预写内容)

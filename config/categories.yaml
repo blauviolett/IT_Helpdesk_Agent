@@ -1,0 +1,113 @@
+# categories.yaml — 类目契约(D1 上午第一个文件,guide §2.1 / v3.1 P1-2)
+#
+# item schema(所有类目统一):
+#   - item_id: str          全局唯一
+#     source: TOOL | QUESTION
+#     tool: str             source=TOOL 时必填,对应只读工具名
+#     question_hint: str    source=QUESTION 时必填,clarify 选题依据
+#     critical: bool
+#
+# 首批查询 = 该类目 checklist 中 source=TOOL 的项按序生成(代码生成,D2 investigate 消费);
+# 第 2 批起由模型决定。不单设 first_queries 段,避免同一事实存两处。
+#
+# 四态 → checklist 置位映射(guide §2.2):OK/EMPTY/DEGRADED → SATISFIED;
+# ERROR → UNAVAILABLE;QUESTION 项由 clarify 恢复 handler 置位。
+
+auto_resolvable:
+  - ACCOUNT_AUTH
+  - APP_PERFORMANCE
+  - NETWORK_VPN
+
+categories:
+  ACCOUNT_AUTH:
+    checklist:
+      - item_id: auth_account_status
+        source: TOOL
+        tool: get_account_status
+        critical: true
+      - item_id: auth_kb_guidance
+        source: TOOL
+        tool: search_kb
+        critical: true
+      - item_id: auth_service_status
+        source: TOOL
+        tool: check_service_status
+        critical: false
+
+  # 注意:critical 项不得含 KB 项(search_kb),否则与 GC-02 的
+  # must_not_call: search_kb 断言冲突(guide §5 D1 / v3.1 冻结检查表)。
+  APP_PERFORMANCE:
+    checklist:
+      - item_id: app_service_status
+        source: TOOL
+        tool: check_service_status
+        critical: true
+      - item_id: app_recent_changes
+        source: TOOL
+        tool: get_recent_changes
+        critical: false
+      - item_id: app_kb_workaround
+        source: TOOL
+        tool: search_kb
+        critical: false
+
+  NETWORK_VPN:
+    checklist:
+      - item_id: vpn_symptom
+        source: QUESTION
+        question_hint: "具体是连不上、频繁断开还是速度慢?有报错信息吗?从什么时候开始的?"
+        critical: true
+      - item_id: vpn_kb_guidance
+        source: TOOL
+        tool: search_kb
+        critical: true
+      - item_id: vpn_service_status
+        source: TOOL
+        tool: check_service_status
+        critical: false
+
+  ACCESS_REQUEST:
+    checklist:
+      - item_id: access_entitlements
+        source: TOOL
+        tool: get_entitlements
+        critical: true
+      - item_id: access_kb_guidance
+        source: TOOL
+        tool: search_kb
+        critical: false
+
+  MULTI_SYSTEM:
+    checklist:
+      - item_id: multi_service_status
+        source: TOOL
+        tool: check_service_status
+        critical: true
+      - item_id: multi_recent_changes
+        source: TOOL
+        tool: get_recent_changes
+        critical: true
+      - item_id: multi_kb_guidance
+        source: TOOL
+        tool: search_kb
+        critical: false
+
+  # SECURITY 由 E1 在 L1 直升,不走调查;checklist 为空。
+  SECURITY:
+    checklist: []
+
+  # OUT_OF_SCOPE_NON_IT 由 E9 REDIRECT(不建单);checklist 为空。
+  OUT_OF_SCOPE_NON_IT:
+    checklist: []
+
+  # UNKNOWN 不是死类目,是"先问两次再判死"(v3.1 P0-2 原文钉死,item_id 不改)。
+  UNKNOWN:
+    checklist:
+      - item_id: symptom_detail
+        source: QUESTION
+        question_hint: "具体是什么现象?从什么时候开始的?"
+        critical: true
+      - item_id: affected_system
+        source: QUESTION
+        question_hint: "涉及哪个系统、应用或设备?"
+        critical: true
