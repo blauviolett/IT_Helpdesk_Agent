@@ -1,0 +1,42 @@
+{
+  "fixture": "status_b",
+  "as_of": "2026-07-27T00:00:00Z",
+  "services": {
+    "okta": { "status": "operational" },
+    "salesforce": {
+      "status": "degraded",
+      "incident": {
+        "id": "INC-4021",
+        "regions": ["EU"],
+        "summary": "Elevated page load times for EU-hosted orgs",
+        "started_at": "2026-07-26T22:40:00Z"
+      }
+    },
+    "vpn": { "status": "operational" },
+    "jenkins": { "status": "operational" },
+    "tableau": { "status": "operational" },
+    "grafana": { "status": "operational" },
+    "email": { "status": "operational" },
+    "jira": { "status": "operational" }
+  },
+  "change_log": [
+    {
+      "change_id": "CHG-2107",
+      "service": "salesforce",
+      "ts": "2026-07-26T21:15:00Z",
+      "summary": "EU edge proxy TLS config rollout (rolled back 23:05)"
+    },
+    {
+      "change_id": "CHG-2106",
+      "service": "vpn",
+      "ts": "2026-07-26T18:00:00Z",
+      "summary": "VPN gateway certificate rotation, EU pool"
+    },
+    {
+      "change_id": "CHG-2105",
+      "service": "jenkins",
+      "ts": "2026-07-25T10:30:00Z",
+      "summary": "Jenkins LDAP plugin upgrade 3.2 -> 3.4"
+    }
+  ]
+}

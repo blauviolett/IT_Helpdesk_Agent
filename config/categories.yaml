@@ -7,8 +7,10 @@
 #     question_hint: str    source=QUESTION 时必填,clarify 选题依据
 #     critical: bool
 #
-# 首批查询 = 该类目 checklist 中 source=TOOL 的项按序生成(代码生成,D2 investigate 消费);
-# 第 2 批起由模型决定。不单设 first_queries 段,避免同一事实存两处。
+# 首批查询 = 该类目 checklist 中 source=TOOL 且参数可由代码确定的项按序生成
+# (代码生成,D2 investigate 消费);search_kb 的 query 是语义参数,由模型从第 2 批
+# 起构造(D2 验收"第二批依赖第一批结果"的承载点)。不单设 first_queries 段,
+# 避免同一事实存两处。
 #
 # 四态 → checklist 置位映射(guide §2.2):OK/EMPTY/DEGRADED → SATISFIED;
 # ERROR → UNAVAILABLE;QUESTION 项由 clarify 恢复 handler 置位。

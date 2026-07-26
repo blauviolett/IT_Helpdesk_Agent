@@ -1,0 +1,71 @@
+{
+  "users": {
+    "u-alice": {
+      "display_name": "Alice Chen",
+      "department": "Sales",
+      "location": "San Francisco",
+      "tenure_days": 420,
+      "device": {
+        "model": "MacBook Air M3",
+        "os": "macOS 15.4",
+        "vpn_client_version": "5.3.1"
+      },
+      "groups": ["sales", "crm-users", "okta-mfa"]
+    },
+    "u-bob": {
+      "display_name": "Bob Martinez",
+      "department": "Engineering",
+      "location": "Austin",
+      "tenure_days": 1130,
+      "device": {
+        "model": "ThinkPad X1 Carbon",
+        "os": "Windows 11 24H2",
+        "vpn_client_version": "5.1.0"
+      },
+      "groups": ["eng", "vpn-users", "github-committers"]
+    },
+    "u-carol": {
+      "display_name": "Carol Singh",
+      "department": "Data",
+      "location": "London",
+      "tenure_days": 3,
+      "device": {
+        "model": "MacBook Pro M4",
+        "os": "macOS 15.5",
+        "vpn_client_version": "5.3.1"
+      },
+      "groups": ["data", "new-hires"]
+    },
+    "u-dan": {
+      "display_name": "Dan Wright",
+      "department": "Customer Support",
+      "location": "Dublin",
+      "tenure_days": 640,
+      "device": {
+        "model": "Dell Latitude 5450",
+        "os": "Windows 11 24H2",
+        "vpn_client_version": "5.2.2"
+      },
+      "groups": ["support", "crm-users"]
+    },
+    "u-eve": {
+      "display_name": "Eve Kim",
+      "department": "Engineering",
+      "location": "Seoul",
+      "tenure_days": 890,
+      "device": {
+        "model": "MacBook Pro M3",
+        "os": "macOS 15.3",
+        "vpn_client_version": "5.3.0"
+      },
+      "groups": ["eng", "grafana-editors", "vpn-users"]
+    }
+  },
+  "entitlements": {
+    "u-alice": ["okta:sso", "salesforce:standard"],
+    "u-bob": ["okta:sso", "github:write", "vpn:standard", "grafana:viewer"],
+    "u-carol": ["okta:sso"],
+    "u-dan": ["okta:sso", "salesforce:standard", "zendesk:agent"],
+    "u-eve": ["okta:sso", "github:write", "vpn:standard", "grafana:viewer"]
+  }
+}

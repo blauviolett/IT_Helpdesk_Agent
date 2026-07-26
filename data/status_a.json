@@ -1,0 +1,15 @@
+{
+  "fixture": "status_a",
+  "as_of": "2026-07-27T00:00:00Z",
+  "services": {
+    "okta": { "status": "operational" },
+    "salesforce": { "status": "operational" },
+    "vpn": { "status": "operational" },
+    "jenkins": { "status": "operational" },
+    "tableau": { "status": "operational" },
+    "grafana": { "status": "operational" },
+    "email": { "status": "operational" },
+    "jira": { "status": "operational" }
+  },
+  "change_log": []
+}

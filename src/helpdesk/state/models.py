@@ -137,7 +137,7 @@ class Issue(BaseModel):
     scope: str | None = None
     onset: str | None = None
     affected_systems: list[str] = Field(default_factory=list)
-    # 仅 ACCOUNT_REQUEST 填;值域 = policy.yaml resources 键 + "other"(v3.1 P1-4)
+    # 仅 ACCESS_REQUEST 填;值域 = policy.yaml resources 键 + "other"(v3.1 P1-4)
     requested_resources: list[str] = Field(default_factory=list)
 
 
