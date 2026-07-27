@@ -3,12 +3,14 @@
 D2 落地:ingress / intake 后 pre-decide 预写入 / sync_checklist / load_actor。
 D3 落地:Input Guard 接线 + 四个恢复 handler(clarify_resume / confirm / verify /
 escalated_followup;消息语义分支由共享 classifier 完成)。
-close / act 与 escalate_followup 的工单评论按计划 D4 收口。
+D4 落地:act(三段协议 ③ EXECUTE,前置四校验)/ close(outcome 结算)/
+escalate_followup 追加工单评论。
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from helpdesk import policy
@@ -29,15 +31,19 @@ from helpdesk.state.models import (
     Device,
     FromUserEntry,
     Message,
+    Outcome,
+    PendingAction,
     Phase,
     PolicyDecision,
     ReasonCode,
+    ResolutionType,
     mark_user_requested_human,
     set_pending_action,
     write_actor,
 )
 from helpdesk.state.store import Store
-from helpdesk.tools.base import ToolStatus
+from helpdesk.tools.adapters import itsm
+from helpdesk.tools.base import ToolStatus, hash_args
 
 
 def ingress(store: Store, state: CaseState | None, text: str) -> tuple[CaseState, str | None]:
@@ -135,16 +141,100 @@ def _verify(state: CaseState, ctx: Any) -> str | None:
 
 
 def _escalated_followup(state: CaseState, ctx: Any) -> str | None:
-    """ESCALATED(二分):RESOLVED → close(outcome 保持 ESCALATED,close 结算);
-    OTHER → 追加工单评论(itsm 接线 D4),phase 不变,不重诊断。"""
+    """ESCALATED(二分):RESOLVED → close(outcome 保持 ESCALATED);
+    OTHER → 追加工单评论,phase 不变,不重诊断。"""
     label = classifier.classify_escalated(
         _last_text(state, "user"), llm=ctx.llm, budget=state.budget
     )
     if label == "RESOLVED":
         return "close"
+    itsm.append_comment(state.escalation.ticket_id, _last_text(state, "user"))
     ctx.tracer.event(state.case_id, "escalate_followup", ticket_id=state.escalation.ticket_id)
     say(state, "已记录,会同步给正在处理这个工单的同事;有进展会在工单里更新。")
     return None  # phase 保持 ESCALATED
+
+
+# ============================================ act(三段协议 ③ EXECUTE,代码节点)
+
+
+def act(state: CaseState, ctx: Any) -> None:
+    """只可能从 confirm 的显式 YES 路由进入。前置四校验(§4.5 ③):
+    未过期 / actor 一致 / policy 复核仍 ALLOW / 幂等键未消费;
+    任一失败 → 作废动作、不执行、回 decide。成功 → 执行 → 清动作 → AWAITING_VERIFY。"""
+    from helpdesk.tools import registry  # 延迟导入避免环
+
+    action = state.pending_action
+    failure = _act_precheck(state, action, getattr(ctx, "session_user", None))
+    if failure is not None:
+        set_pending_action(state, None, writer="action_builder")
+        ctx.tracer.event(state.case_id, "act_rejected", reason=failure)
+        say(state, f"这个操作没有执行({failure})。我再看看别的办法。")
+        state.phase = Phase.INVESTIGATING
+        return
+    result = registry.execute(state, action.tool, action.args_frozen, ctx, invoked_by="system")
+    set_pending_action(state, None, writer="action_builder")  # 单次消费,无论成败
+    ctx.tracer.event(
+        state.case_id, "act_executed", tool=action.tool,
+        action_id=action.action_id, status=result.status.value,
+    )
+    if result.status is ToolStatus.ERROR:
+        say(state, "操作在系统侧执行失败,我重新评估一下,必要时转人工。")
+        state.phase = Phase.INVESTIGATING
+        return
+    say(state, f"已执行:{result.digest}。请按邮件提示操作,然后告诉我是否解决。")
+    state.phase = Phase.AWAITING_VERIFY
+
+
+def _act_precheck(
+    state: CaseState, action: PendingAction | None, session_user: str | None,
+    now: datetime | None = None,
+) -> str | None:
+    """返回失败原因;None = 四校验全过。"""
+    if action is None:
+        return "没有待执行的动作"
+    now = now or datetime.now(timezone.utc)
+    if action.expires_at <= now:
+        return "确认已超时,动作过期作废"
+    if session_user and state.actor.user_id and session_user != state.actor.user_id:
+        return "确认者与动作发起人不一致"  # actor 一致校验
+    if policy.check(action.tool).decision != "ALLOW":
+        return "策略复核未通过"
+    if policy.idempotency_key(state.case_id, action.tool, action.args_frozen) != action.idempotency_key:
+        return "动作与冻结时的内容不一致"
+    consumed = any(
+        e.tool == action.tool
+        and e.args_hash == hash_args(action.tool, action.args_frozen)
+        and e.status != "ERROR"
+        for e in state.evidence
+    )
+    if consumed:
+        return "该动作已执行过,幂等键已消费"
+    return None
+
+
+# ==================================================== close(outcome 结算,代码节点)
+
+
+def close(state: CaseState, ctx: Any) -> None:
+    """outcome 唯一结算点。升级 case 的 outcome 已在建单时刻归因为 ESCALATED,
+    此处只保持不改写(冻结契约);phase=CLOSED 由 transition 后置。"""
+    if state.outcome is not None:  # ESCALATED 经用户确认关闭
+        ctx.tracer.event(
+            state.case_id, "case_closed",
+            outcome=state.outcome.value, note="user_confirmed_fixed",
+        )
+        say(state, "好的,已确认解决,这个工单就关闭了。之后有问题随时找我。")
+        return
+    if state.issue.category is Category.OUT_OF_SCOPE_NON_IT:
+        state.outcome = Outcome.REDIRECTED  # E9:不建单,指路
+        say(state, "这个请求不属于 IT 支持范围,建议联系行政/设施或对应业务团队;这里就不建工单了。")
+    elif state.diagnosis.resolution_type is ResolutionType.INFORMATIONAL:
+        state.outcome = Outcome.INFORMED_KNOWN_INCIDENT
+        say(state, "好的。这个问题源于已知的服务事故,服务恢复后会自动好转;本次咨询就记录到这里。")
+    else:
+        state.outcome = Outcome.RESOLVED_BY_AGENT
+        say(state, "太好了,问题已解决,本次工单关闭。之后有问题随时找我。")
+    ctx.tracer.event(state.case_id, "case_closed", outcome=state.outcome.value)
 
 
 _RESUME_HANDLERS: dict[str, Callable[[CaseState, Any], str | None]] = {

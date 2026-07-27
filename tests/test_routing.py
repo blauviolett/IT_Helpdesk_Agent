@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from helpdesk import policy
 from helpdesk.guards import detect_human_request
 from helpdesk.llm.fake import FakeLLM
 from helpdesk.orchestrator import runner
@@ -21,7 +21,9 @@ from helpdesk.orchestrator.classifier import (
 )
 from helpdesk.orchestrator.runner import Ctx, handle_message
 from helpdesk.state.models import (
+    Actor,
     ChecklistStatus,
+    Outcome,
     Phase,
     ReasonCode,
     make_state,
@@ -45,21 +47,19 @@ def _trace(tmp_path, case_id):
 
 def _routed_to(tmp_path, case_id, node):
     return any(
-        e["kind"] in ("node_start", "node_pending_delivery") and e.get("node") == node
-        for e in _trace(tmp_path, case_id)
+        e["kind"] == "node_start" and e.get("node") == node for e in _trace(tmp_path, case_id)
     )
 
 
-def _pending_action(tool="send_unlock_verification"):
-    return {
-        "action_id": "a1",
-        "tool": tool,
-        "args_frozen": {},
-        "policy_rule_id": "RULE-UNLOCK-SELF",
-        "idempotency_key": "k1",
-        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
-        "prompt_text": "要发送解锁验证吗?",
-    }
+def _confirm_state(**overrides):
+    """AWAITING_CONFIRM 态 + 经真实 FREEZE 冻结的 pending_action(幂等键可复核)。"""
+    state = make_state(
+        phase=Phase.AWAITING_CONFIRM,
+        actor=Actor(user_id="u-alice", profile_loaded=True),
+        **overrides,
+    )
+    assert policy.freeze(state, "send_unlock_verification") is None
+    return state
 
 
 # ================================================= 路由 1:无 case → 建 case + intake
@@ -103,28 +103,31 @@ def test_clarify_loop_two_rounds_then_capped_escalation(tmp_path):
 
 
 def test_confirm_three_way_only_explicit_yes_consumes(tmp_path):
-    # YES → act(动作保留给 act 前置校验消费)
+    # YES → act:四校验通过 → 真执行 → 清动作 → AWAITING_VERIFY(§4.5 ③)
     ctx = _ctx(tmp_path)
-    yes = make_state(phase=Phase.AWAITING_CONFIRM, pending_action=_pending_action())
+    yes = _confirm_state()
     ctx.store.save(yes)
-    s = handle_message("发吧", ctx=ctx, case_id=yes.case_id)
+    s = handle_message("发吧", ctx=ctx, case_id=yes.case_id, as_user="u-alice")
     assert _routed_to(tmp_path, yes.case_id, "act")
-    assert s.pending_action is not None  # 消费动作属于 act(D4),confirm 不消费
+    assert s.pending_action is None  # 单次消费
+    assert s.phase is Phase.AWAITING_VERIFY
+    assert sum(1 for e in s.evidence if e.tool == "send_unlock_verification") == 1
 
-    # NO → 记 declined_actions + 作废 → 回 decide(UNKNOWN 缺口 → clarify)
+    # NO → 记 declined_actions + 作废 → 回 decide(UNKNOWN 缺口 → clarify),不执行
     ctx = _ctx(tmp_path)
-    no = make_state(phase=Phase.AWAITING_CONFIRM, pending_action=_pending_action())
+    no = _confirm_state()
     ctx.store.save(no)
-    s = handle_message("不用发", ctx=ctx, case_id=no.case_id)
+    s = handle_message("不用发", ctx=ctx, case_id=no.case_id, as_user="u-alice")
     assert s.declined_actions == ["send_unlock_verification"]
     assert s.pending_action is None
+    assert not any(e.tool == "send_unlock_verification" for e in s.evidence)
     assert s.phase is Phase.AWAITING_CLARIFY  # decide 已重新裁决,不停留在确认态
 
     # OTHER("这会做什么?")→ 不触发执行、动作作废、不记 declined
     ctx = _ctx(tmp_path)
-    other = make_state(phase=Phase.AWAITING_CONFIRM, pending_action=_pending_action())
+    other = _confirm_state()
     ctx.store.save(other)
-    s = handle_message("这会做什么?", ctx=ctx, case_id=other.case_id)
+    s = handle_message("这会做什么?", ctx=ctx, case_id=other.case_id, as_user="u-alice")
     assert s.pending_action is None
     assert s.declined_actions == []
     assert not _routed_to(tmp_path, other.case_id, "act")
@@ -165,18 +168,22 @@ def test_verify_three_way_with_single_probe(tmp_path):
 
 
 def test_escalated_two_way(tmp_path):
+    # RESOLVED → close:phase=CLOSED,outcome 保持 ESCALATED(建单时刻归因,冻结契约)
     ctx = _ctx(tmp_path)
-    done = make_state(phase=Phase.ESCALATED)
+    done = make_state(phase=Phase.ESCALATED, outcome=Outcome.ESCALATED)
     ctx.store.save(done)
-    handle_message("好了,有人帮我处理了", ctx=ctx, case_id=done.case_id)
+    s = handle_message("好了,有人帮我处理了", ctx=ctx, case_id=done.case_id)
     assert _routed_to(tmp_path, done.case_id, "close")
+    assert s.phase is Phase.CLOSED
+    assert s.outcome is Outcome.ESCALATED  # 不被改写为 RESOLVED_BY_AGENT
 
     ctx = _ctx(tmp_path)
-    wait = make_state(phase=Phase.ESCALATED)
+    wait = make_state(phase=Phase.ESCALATED, outcome=Outcome.ESCALATED)
     ctx.store.save(wait)
     s = handle_message("进展如何?", ctx=ctx, case_id=wait.case_id)
     assert s.phase is Phase.ESCALATED  # phase 不变,不重诊断
-    assert s.messages[-1].role == "assistant"  # 追加回执(工单评论 itsm 接线 D4)
+    assert s.outcome is Outcome.ESCALATED
+    assert s.messages[-1].role == "assistant"  # 追加回执(工单评论)
     assert any(e["kind"] == "escalate_followup" for e in _trace(tmp_path, wait.case_id))
     assert not _routed_to(tmp_path, wait.case_id, "intake")
 

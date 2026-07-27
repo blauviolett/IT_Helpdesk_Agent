@@ -13,11 +13,26 @@ resources:
     aliases: ["grafana", "grafana dashboards", "内部监控看板"]
     decision: ALLOW          # 已有 viewer 权限时由升级消息说明
 
-# 3 个队列(字段 allowlist D4 填入)
+# 3 个队列 + packet 字段 allowlist(D4;handoff.build_packet 按队列过滤,
+# 不在 allowlist 的字段一律不出现在工单正文;transcript/messages 永不入包)。
+# data-platform-approvers 是权限审批队列:不需要也不应看到设备信息(PII 最小化,
+# test_safety 钉死)—— 连 evidence digest 也不带(profile digest 含设备型号,
+# 审批只需要申请人身份 + 申请资源 + 两段叙述);security-ir 需要设备信息定位终端,
+# 但不带用户自试步骤等噪音。
 queues:
-  - it-helpdesk
-  - data-platform-approvers
-  - security-ir
+  it-helpdesk:
+    packet_fields:
+      [case_id, category, reason_code, priority, queue, verbatim,
+       agent_diagnosis, needed_from_human, user_answers, tried_by_user,
+       evidence, contradictions, requester, device_info]
+  data-platform-approvers:
+    packet_fields:
+      [case_id, category, reason_code, priority, queue, verbatim,
+       agent_diagnosis, needed_from_human, requested_resources, requester]
+  security-ir:
+    packet_fields:
+      [case_id, category, reason_code, priority, queue, verbatim,
+       agent_diagnosis, needed_from_human, requester, device_info, evidence]
 
 # 定级:scope → impact 映射 + impact × urgency 9 格查表(v2.1 §1.5 E3)。
 # 约束:TEAM × MEDIUM → P3(test_gates 钉死);个人(INDIVIDUAL)deadline 上限 P2,

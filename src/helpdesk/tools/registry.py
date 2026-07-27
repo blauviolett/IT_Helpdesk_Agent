@@ -1,15 +1,17 @@
 """唯一工具入口(guide §2):三层门控 + 运行时 actor 注入 + 去重 + 重试 + 落账。
 
-- 三层门控(v2.1 C4,D3 接线):
+- 三层门控(v2.1 C4):
   ① 阶段门:只读工具仅限调查阶段(INTAKE/INVESTIGATING/AWAITING_CLARIFY,
-     后者覆盖澄清恢复后立即进入的 investigate);写工具仅限 AWAITING_CONFIRM
-     (只可能来自 act handler,D4);
+     后者覆盖澄清恢复后立即进入的 investigate);写工具要求 invoked_by="system"
+     (模型侧调用一律 ERROR),其中 send_unlock_verification 仅限 AWAITING_CONFIRM
+     (只可能来自 act),create_escalation_ticket 不限阶段(升级不能被阶段卡死);
   ② 策略门:非只读工具执行前 policy.check 必须 ALLOW(deny-by-default);
-  ③ 运行门:预算拦截(触顶拒执行,不落 evidence)+ actor 注入 + 去重 + 重试。
-- 任何工具签名(模型可见 params schema)不得出现 target_user / user_id;
-  actor 由本层注入,模型无法指定操作对象(test_tools 静态检查钉死)。
-- 写工具(send_unlock_verification / create_escalation_ticket)D4 落地,
-  read_only=False,永不出现在 model_tool_specs() —— 写路径只走三段协议的 act。
+  ③ 运行门:预算拦截(触顶拒执行,不落 evidence;仅拦模型驱动调用 ——
+     系统侧建单/已确认动作不能被预算卡死,E5 的业务后果由 decide 已裁决)
+     + actor 注入 + 去重(仅只读工具)+ 重试。
+- 任何工具签名(params schema)不得出现 target_user / user_id;actor 由本层注入,
+  模型无法指定操作对象(test_tools 静态检查钉死)。
+- 写工具 read_only=False,永不出现在 model_tool_specs()(冻结契约)。
 - checklist 置位按 guide §2.2 四态映射:OK/EMPTY/DEGRADED → SATISFIED;
   ERROR → UNAVAILABLE(仅覆盖 PENDING,不抹掉已有成功证据)。
 """
@@ -34,12 +36,15 @@ from helpdesk.state.models import (
     append_evidence,
 )
 from helpdesk.tools import base
-from helpdesk.tools.adapters import directory, idp, kb, status
+from helpdesk.tools.adapters import directory, idp, itsm, kb, status
 from helpdesk.tools.base import ToolResult, ToolStatus, error_result, hash_args
 
-# 阶段门(①):read_only → 调查阶段;写工具 → 仅 AWAITING_CONFIRM(act,D4)
+# 阶段门(①):read_only → 调查阶段;写工具按工具限定(None = 不限阶段)
 _READ_PHASES = frozenset({Phase.INTAKE, Phase.INVESTIGATING, Phase.AWAITING_CLARIFY})
-_WRITE_PHASES = frozenset({Phase.AWAITING_CONFIRM})
+_WRITE_PHASES: dict[str, frozenset[Phase] | None] = {
+    "send_unlock_verification": frozenset({Phase.AWAITING_CONFIRM}),  # 只可能来自 act
+    "create_escalation_ticket": None,  # 任何阶段都必须能建单(含 ingress 安全直升)
+}
 
 
 class NoParams(BaseModel):
@@ -109,6 +114,21 @@ TOOLS: dict[str, ToolSpec] = {
             ServiceParams,
             status.get_recent_changes,
         ),
+        # ---- 写工具(2 个,冻结):永不进模型工具列表,只能 invoked_by="system" ----
+        ToolSpec(
+            "send_unlock_verification",
+            "发送账号解锁验证邮件(写;仅经三段协议 act 执行)",
+            NoParams,
+            idp.send_unlock_verification,
+            read_only=False,
+        ),
+        ToolSpec(
+            "create_escalation_ticket",
+            "创建升级工单(写;系统侧记账,无需用户确认)",
+            itsm.TicketParams,
+            itsm.create_escalation_ticket,
+            read_only=False,
+        ),
     )
 }
 
@@ -127,11 +147,19 @@ def model_tool_specs() -> list[str]:
     return lines
 
 
-def execute(state: CaseState, tool_name: str, args: dict[str, Any] | None, ctx: Any) -> ToolResult:
+def execute(
+    state: CaseState,
+    tool_name: str,
+    args: dict[str, Any] | None,
+    ctx: Any,
+    *,
+    invoked_by: str = "model",
+) -> ToolResult:
     """执行一次工具调用:注入 actor、去重、重试,写 evidence / checklist / budget。
 
     ctx 只需提供 .runtime(ToolRuntime)与 .tracer(Tracer)。模型给出的非法工具名
-    或非法 args 走 ERROR 信封,不抛异常(不触发 E4)。
+    或非法 args 走 ERROR 信封,不抛异常(不触发 E4)。invoked_by="system" 仅由
+    act / escalate 代码路径传入,模型驱动的调用永远走默认值。
     """
     tracer, runtime = ctx.tracer, ctx.runtime
     spec = TOOLS.get(tool_name)
@@ -139,17 +167,21 @@ def execute(state: CaseState, tool_name: str, args: dict[str, Any] | None, ctx: 
         state.budget.tool_calls += 1  # 模型给错名也计入预算,防无谓循环
         tracer.event(state.case_id, "tool_call", tool=tool_name, status="ERROR", reason="unknown_tool")
         return error_result(f"tool not available: {tool_name}", "unknown_tool")
-    # ① 阶段门
-    allowed = _READ_PHASES if spec.read_only else _WRITE_PHASES
-    if state.phase not in allowed:
+    # ① 阶段门(写工具附加调用方门:模型幻觉写工具名一律 ERROR,不落 evidence)
+    if not spec.read_only and invoked_by != "system":
+        tracer.event(state.case_id, "tool_call", tool=tool_name, status="ERROR", reason="write_not_model_invocable")
+        return error_result(f"{tool_name} is not model-invocable", "write_not_model_invocable")
+    allowed = _READ_PHASES if spec.read_only else _WRITE_PHASES[tool_name]
+    if allowed is not None and state.phase not in allowed:
         tracer.event(state.case_id, "tool_call", tool=tool_name, status="ERROR", reason="stage_blocked")
         return error_result(f"{tool_name} not allowed in phase {state.phase.value}", "stage_blocked")
     # ② 策略门(只对写动作;deny-by-default)
     if not spec.read_only and policy.check(tool_name).decision != "ALLOW":
         tracer.event(state.case_id, "tool_call", tool=tool_name, status="ERROR", reason="policy_denied")
         return error_result(f"{tool_name} denied by policy", "policy_denied")
-    # ③ 运行门:预算拦截(超限后果由 decide E5 裁决,此处只拒执行)
-    if (dim := over_budget(state.budget)) is not None:
+    # ③ 运行门:预算拦截只对模型驱动调用(超限后果由 decide E5 裁决,此处只拒执行;
+    #    系统侧建单/已确认动作不能被预算卡死)
+    if invoked_by != "system" and (dim := over_budget(state.budget)) is not None:
         tracer.event(state.case_id, "tool_call", tool=tool_name, status="ERROR", reason="budget_exhausted", dimension=dim)
         return error_result(f"budget exhausted ({dim})", "budget_exhausted")
     try:
@@ -161,10 +193,12 @@ def execute(state: CaseState, tool_name: str, args: dict[str, Any] | None, ctx: 
 
     canonical = params.model_dump(mode="json")
     args_hash = hash_args(tool_name, canonical)
+    # 去重仅对只读工具(读是幂等优化;写路径的单次消费由 act 幂等键校验保证,
+    # 且写调用必须诚实落 evidence,供"恰好 1 次"断言与审计)
     dup = next(
         (e for e in state.evidence if e.tool == tool_name and e.args_hash == args_hash and e.status != "ERROR"),
         None,
-    )
+    ) if spec.read_only else None
     if dup is not None:
         tracer.event(state.case_id, "tool_call", tool=tool_name, args=canonical, args_hash=args_hash, status=dup.status, dedup=True)
         return ToolResult(status=ToolStatus(dup.status), digest=dup.digest, source_ref=dup.source_ref, authority=dup.authority)

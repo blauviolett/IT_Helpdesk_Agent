@@ -4,8 +4,10 @@
 - Guard 失败控制流(冻结):带违规信息节点内重试 1 次 → 仍失败 guard_failures=2,
   不落任何不可信诊断(diagnosis 清空 → transition 不进等待态)→ 回 decide → E10。
   节点内重试不计 resolution_attempts(由 runner 在 RESOLVE 分支计数)。
-- 三段协议 ① PROPOSE:resolution_type=ACTION 时只输出 intent/rationale;
-  args 由 ActionBuilder 代码冻结(D4),模型侧任何参数都不被消费。
+- 三段协议 ①→②:PROPOSE(resolution_type=ACTION 时只输出 intent/rationale)后,
+  节点出口调用 policy.freeze() 代码冻结 args(D4)。冻结被拒(declined intent /
+  非法动作 / 无身份)走既有节点内反馈重试路径,不计 guard_failures
+  (P1-6:最终由 E6 兜底,不是 E10);模型侧任何参数都不被消费。
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from helpdesk import policy
 from helpdesk.guards import output_guard
 from helpdesk.llm import render_prompt
 from helpdesk.orchestrator.nodes import say
@@ -54,13 +57,33 @@ def run_resolve(state: CaseState, ctx: Any) -> None:
         out = ctx.llm.complete_structured("resolve", prompt, ResolveOutput, budget=state.budget)
         steps = [DiagnosisStep(**s.model_dump()) for s in out.steps]
         violations = output_guard(state, steps)
-        if not violations:
-            _apply(state, out, steps)
-            return
-        state.guard_failures += 1  # 出口 guard 独占写;E10 = ≥2
-        guard_feedback = ";".join(violations)
-        ctx.tracer.event(state.case_id, "output_guard_failed", violations=violations)
-    # 两次均未通过:不落不可信诊断,回 decide(guard_failures=2 → E10)
+        if violations:
+            state.guard_failures += 1  # 出口 guard 独占写;E10 = ≥2
+            guard_feedback = ";".join(violations)
+            ctx.tracer.event(state.case_id, "output_guard_failed", violations=violations)
+            continue
+        if out.resolution_type is ResolutionType.ACTION:
+            # 三段协议 ② FREEZE(代码):declined/非法动作在此被第二道防线拦下
+            rejection = policy.freeze(state, out.intent or "")
+            if rejection is not None:
+                guard_feedback = (
+                    f"提议的动作不可执行:{rejection}。"
+                    "请改为 GUIDED 方案,或提出其他有引用支撑的合法动作。"
+                )
+                ctx.tracer.event(
+                    state.case_id, "freeze_rejected", intent=out.intent, reason=rejection
+                )
+                continue  # 不计 guard_failures:最终由 E6 兜底(P1-6)
+            ctx.tracer.event(
+                state.case_id,
+                "action_frozen",
+                tool=state.pending_action.tool,
+                action_id=state.pending_action.action_id,
+                expires_at=state.pending_action.expires_at,
+            )
+        _apply(state, out, steps)
+        return
+    # 两次均未通过:不落不可信诊断,回 decide(引用违规两次 → E10;冻结被拒 → E6)
     state.diagnosis = Diagnosis()
 
 
@@ -83,6 +106,8 @@ def _render_reply(state: CaseState, out: ResolveOutput, steps: list[DiagnosisSte
         lines.append(f"{i}. {step.text}{cite}")
     if out.resolution_type is ResolutionType.ACTION:
         lines.append("这一步需要系统侧操作,征得你的确认后才会执行。")
+        if state.pending_action is not None:
+            lines.append(state.pending_action.prompt_text)
     elif out.resolution_type is ResolutionType.GUIDED:
         lines.append("请按上述步骤操作,然后告诉我是否解决。")
     if state.confidence is Confidence.LOW:

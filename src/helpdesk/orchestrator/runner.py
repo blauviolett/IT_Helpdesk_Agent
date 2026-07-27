@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from helpdesk.orchestrator import handlers, transition
 from helpdesk.orchestrator.gates import Branch, decide
-from helpdesk.orchestrator.nodes import clarify, intake, investigate, resolve
+from helpdesk.orchestrator.nodes import clarify, escalate, intake, investigate, resolve
 from helpdesk.state.models import CaseState, ReasonCode
 from helpdesk.state.store import Store
 from helpdesk.tools.base import ToolRuntime
@@ -22,11 +22,13 @@ class Ctx:
     tracer: Tracer
     store: Store
     runtime: ToolRuntime = field(default_factory=ToolRuntime)
+    session_user: str | None = None  # 本轮 --as-user 身份;act 的"actor 一致"校验消费
 
-# 节点注册表:act / escalate / close 按计划 D4 注册。
+# 节点注册表:5 LLM 节点 + 代码节点 act / close(ingress 在进循环前)。
 NODES: dict[str, Callable[[CaseState, Ctx], None]] = {
     "intake": intake.run_intake, "investigate": investigate.run_investigate,
     "clarify": clarify.run_clarify, "resolve": resolve.run_resolve,
+    "escalate": escalate.run_escalate, "act": handlers.act, "close": handlers.close,
 }
 _MAX_HOPS = 16  # 纯防御(死循环保险丝);业务边界由 decide 的 E5/E6 承担
 
@@ -35,6 +37,7 @@ def handle_message(
     text: str, *, ctx: Ctx, case_id: str | None = None, as_user: str | None = None
 ) -> CaseState:
     started = time.perf_counter()
+    ctx.session_user = as_user
     state = ctx.store.get(case_id) if case_id else None
     state, node_name = handlers.ingress(ctx.store, state, text)
     if as_user and not state.actor.profile_loaded:
@@ -43,10 +46,7 @@ def handle_message(
         node_name = handlers.resume(state, node_name, ctx)
     for _ in range(_MAX_HOPS):
         if node_name is not None:
-            node = NODES.get(node_name)
-            if node is None:  # 该节点后日交付:停在当前 decide 结果,状态已落账
-                ctx.tracer.event(state.case_id, "node_pending_delivery", node=node_name)
-                break
+            node = NODES[node_name]
             snapshot = state.model_copy(deep=True)  # §4.3:深拷贝,嵌套结构不可穿透
             ctx.tracer.event(state.case_id, "node_start", node=node_name)
             try:

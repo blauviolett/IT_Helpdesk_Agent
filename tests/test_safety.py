@@ -3,13 +3,17 @@
 D1:转人工词表段(v3.1 P0-1a:≥5 正例置位 + ≥3 负例不置位)。
 D3:policy deny-by-default 段 + Input Guard 段 + Output Guard 段
 (伪造引用两次 → GUARD_FAILED 且 guard_failures=2 落盘)。
-按计划补:一致性检查(D4)、packet 字段 allowlist(D4)。
+D4:一致性检查(确定性,10/10 复现)+ handoff packet 字段 allowlist
+(data-platform-approvers 不含设备信息;transcript 永不入包)。
 """
+
+import json
 
 import pytest
 
-from helpdesk import policy
+from helpdesk import handoff, policy
 from helpdesk.guards import (
+    consistency_checks,
     detect_human_request,
     detect_security_signal,
     has_question_marker,
@@ -19,7 +23,10 @@ from helpdesk.guards import (
 from helpdesk.llm.fake import FakeLLM
 from helpdesk.orchestrator.runner import Ctx, handle_message
 from helpdesk.state.models import (
+    Actor,
+    Device,
     DiagnosisStep,
+    Message,
     ReasonCode,
     make_state,
     mark_user_requested_human,
@@ -219,6 +226,94 @@ def test_fabricated_citation_twice_escalates_guard_failed(tmp_path):
     assert s.diagnosis.steps == []  # 不落任何不可信引用
     assert s.resolution_attempts == 1  # guard 节点内重试不计数
     assert ctx.store.get(s.case_id).guard_failures == 2  # 落盘
+
+
+# ------------------------------------------------- 一致性检查(D4,确定性,非 LLM)
+
+
+def _entitlements_evidence(digest):
+    return {
+        "id": "e9",
+        "tool": "get_entitlements",
+        "args_hash": "z",
+        "status": "OK",
+        "digest": digest,
+    }
+
+
+def test_consistency_check_reproducible_10_of_10():
+    # fixture 埋点:u-eve 在 grafana-editors 组,权限视图却只有 grafana:viewer
+    state = make_state(
+        actor=Actor(user_id="u-eve", groups=["eng", "grafana-editors"], profile_loaded=True),
+        evidence=[
+            _entitlements_evidence(
+                "entitlements for u-eve: github:write, grafana:viewer, okta:sso, vpn:standard"
+            )
+        ],
+    )
+    results = [consistency_checks(state) for _ in range(10)]
+    assert all(
+        len(r) == 1 and r[0].check_id == "groups_vs_entitlements" for r in results
+    )  # 10/10 复现
+    assert len(state.contradictions) == 1  # 整体重算:重入不累积
+
+
+def test_consistency_check_no_false_positive():
+    state = make_state(
+        actor=Actor(user_id="u-bob", groups=["eng", "vpn-users"], profile_loaded=True),
+        evidence=[
+            _entitlements_evidence(
+                "entitlements for u-bob: github:write, grafana:viewer, okta:sso, vpn:standard"
+            )
+        ],
+    )
+    assert consistency_checks(state) == []
+    assert state.contradictions == []
+
+
+# ------------------------------------------------- handoff packet 字段 allowlist(D4)
+
+
+def _escalated_state(queue):
+    state = make_state(
+        category="ACCESS_REQUEST",
+        requested_resources=["snowflake_prod"],
+        actor=Actor(
+            user_id="u-carol",
+            display_name="Carol Singh",
+            department="Data",
+            location="London",
+            device=Device(model="MacBook Pro M4", os="macOS 15.5", vpn_client_version="5.3.1"),
+            profile_loaded=True,
+        ),
+    )
+    state.escalation.required = True
+    state.escalation.reason_code = ReasonCode.POLICY_REQUIRED
+    state.escalation.queue = queue
+    state.escalation.priority = "P3"
+    return state
+
+
+def test_packet_data_platform_queue_excludes_device_info():
+    packet = handoff.build_packet(
+        _escalated_state("data-platform-approvers"),
+        agent_diagnosis="新人申请 snowflake 生产库权限,策略要求人工审批",
+        needed_from_human="请审批人核对身份与用途",
+    )
+    assert "device_info" not in packet  # §7.2 必过项:该队列不含设备信息
+    rendered = json.dumps(packet, ensure_ascii=False)
+    assert "MacBook" not in rendered and "macOS" not in rendered
+    assert packet["requested_resources"] == ["snowflake_prod"]
+
+
+def test_packet_it_helpdesk_includes_device_info_but_never_transcript():
+    state = _escalated_state("it-helpdesk")
+    state.messages.append(Message(turn_id=1, role="user", content="TRANSCRIPT-SENTINEL"))
+    packet = handoff.build_packet(state, agent_diagnosis="d", needed_from_human="n")
+    assert packet["device_info"]["model"] == "MacBook Pro M4"
+    rendered = json.dumps(packet, ensure_ascii=False)
+    assert "TRANSCRIPT-SENTINEL" not in rendered  # transcript 不入工单正文
+    assert "messages" not in packet
 
 
 def _ctx(tmp_path, responses=None):

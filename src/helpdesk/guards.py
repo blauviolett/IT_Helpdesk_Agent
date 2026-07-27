@@ -3,7 +3,7 @@
 D1 落地:转人工词表 + 共享否定匹配实现(v3.1 P0-1a / P1-5)。
 D3 落地:Input Guard(凭据检测 + 注入/安全信号 + 附件拒收,v2.1 D8)+
 Output Guard(引用存在性 + authority 仅对 KB + GENERIC 规则,v2.1 D5/D6/D10)。
-D4 落地:consistency_checks()(1 条规则)。
+D4 落地:consistency_checks()(1 条规则,groups vs entitlements;E8 唯一输入)。
 
 否定匹配三规则(guide §4.4,全部确定性),本实现供两处复用:
 ① ingress 转人工词表(本文件 detect_human_request);
@@ -179,3 +179,48 @@ def output_guard(
     if steps and valid_citations == 0:
         violations.append("全部步骤均无有效引用:通用建议不能单独构成解决方案")
     return violations
+
+
+# ==================================================== 跨源一致性检查(D4,确定性)
+# 唯一规则:目录 groups 视图与 entitlements 权限视图矛盾(fixture 埋点:u-eve 在
+# grafana-editors 组,但权限视图只有 grafana:viewer)。E8 = contradictions 非空。
+
+_GROUP_IMPLIES_ENTITLEMENT: dict[str, str] = {"grafana-editors": "grafana:editor"}
+
+
+def consistency_checks(state: CaseState) -> list:
+    """contradictions 唯一写入者(确定性代码,非 LLM)。
+
+    整体重算(幂等):同一状态跑 N 次结果一致(10/10 复现),重入不累积。
+    输入:actor.groups(get_user_profile 装载)+ get_entitlements 的证据 digest
+    (digest 格式由 directory adapter 冻结:"entitlements for u-x: a, b, c")。
+    """
+    from helpdesk.state.models import Contradiction
+
+    found: list[Contradiction] = []
+    ent = next(
+        (e for e in reversed(state.evidence) if e.tool == "get_entitlements" and e.status == "OK"),
+        None,
+    )
+    if ent is not None and state.actor.groups:
+        entitlements = _entitlements_from_digest(ent.digest)
+        for group, required in _GROUP_IMPLIES_ENTITLEMENT.items():
+            if group in state.actor.groups and required not in entitlements:
+                found.append(
+                    Contradiction(
+                        check_id="groups_vs_entitlements",
+                        description=(
+                            f"目录 groups 含 {group},但权限视图无 {required}"
+                            f"(实际:{', '.join(sorted(entitlements)) or '(空)'});"
+                            "两个数据源矛盾,不能作为授权依据,需人工核对"
+                        ),
+                        involved=["get_user_profile", ent.id],
+                    )
+                )
+    state.contradictions = found
+    return found
+
+
+def _entitlements_from_digest(digest: str) -> set[str]:
+    _, _, tail = digest.partition(":")
+    return {part.strip() for part in tail.split(",") if part.strip()}

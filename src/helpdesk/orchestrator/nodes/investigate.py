@@ -19,6 +19,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from helpdesk.config import load_categories, load_limits
+from helpdesk.guards import consistency_checks
 from helpdesk.llm import render_prompt
 from helpdesk.orchestrator import handlers
 from helpdesk.orchestrator.budget import over_budget
@@ -76,6 +77,8 @@ def run_investigate(state: CaseState, ctx: Any) -> None:
         calls = out.tool_calls
         if _critical_satisfied(state):
             break  # 终止 2:critical 全 SATISFIED
+    # 调查出口:跨源一致性检查(确定性代码,D4);E8 由 decide 消费
+    consistency_checks(state)
 
 
 def _first_batch(state: CaseState) -> list[ToolCallRequest]:
