@@ -16,6 +16,7 @@ from enum import StrEnum
 from typing import Any
 
 from helpdesk.config import load_categories, load_limits
+from helpdesk.orchestrator.budget import over_budget
 from helpdesk.state.models import (
     Category,
     CaseState,
@@ -85,14 +86,9 @@ def decide(
         return escalate(ReasonCode.GUARD_FAILED)
 
     # ---------------- L2 预算 ----------------
-    # E5
+    # E5(与预算拦截器同口径;limits 已传入,保持零 IO)
     b = state.budget
-    if (
-        b.tool_calls >= limits["tool_calls_max"]
-        or b.turns >= limits["turns_max"]
-        or b.llm_cost_usd >= limits["llm_cost_usd_max"]
-        or b.elapsed_sec >= limits["elapsed_sec_max"]
-    ):
+    if over_budget(b, limits) is not None:
         return escalate(ReasonCode.BUDGET_EXHAUSTED)
     # E6:REPEATED_FAILURE 语义,归 E6;reason_code 复用 BUDGET_EXHAUSTED
     # (冻结枚举无 REPEATED_FAILURE,E6 在 L2 预算层 —— 用户裁决 2026-07-26)

@@ -48,8 +48,58 @@ The LLM generates semantics (hypotheses, wording, plans); code judges boundaries
 
 ## 3. Architecture & design decisions
 
-*(filled on D3 — node/handler topology, state machine, decide() gate ordering,
-single-ownership state fields, three-segment write protocol)*
+**Topology (frozen): 5 LLM nodes + 4 code handlers + 1 shared classifier.**
+LLM nodes generate semantics only — `intake` (structured issue profile),
+`investigate` (hypotheses + next tool batch, max 3 batches), `clarify` (one
+question per gap), `resolve` (cited plan), `escalate` (two narrative sections).
+Code handlers own the lifecycle — `ingress` (every message: credential
+redaction, human-request ratchet, security fast-path), `decide`, `act`, `close`
+— plus one shared deterministic-wordlist-first `classifier` (confirm YES/NO/OTHER,
+verify RESOLVED/FAILED/UNKNOWN, escalated RESOLVED/OTHER) with a SMALL-model
+fallback. No node does boundary judgment; no handler calls an LLM node.
+
+**State machine.** 7 phases (`INTAKE → INVESTIGATING → AWAITING_CLARIFY /
+AWAITING_CONFIRM / AWAITING_VERIFY → ESCALATED / CLOSED`); each waiting phase
+has exactly one recovery route, driven by the classifier. `outcome` is settled
+once by `close` and decoupled from `phase` (a case closed after escalation keeps
+`outcome=ESCALATED` — metrics attribute at ticket-creation time).
+
+**`decide()` is a pure function** (zero IO, zero LLM, unit-tested gate by gate):
+L0 lifecycle → L1 hard red lines (security, policy-requires-human, user asked
+for a human, guard failures) → L2 budget → L3 capability (missing critical info,
+unresolved contradictions, out-of-scope) → L4 normal branches (R1–R3 all-PASS →
+RESOLVE; question gap → ASK; tool gap → INVESTIGATE) → L5 fallback = escalate.
+`confidence` (HIGH/LOW, two booleans) only affects wording, never safety.
+System errors (E4) deliberately live in the **runner**, not in `decide`:
+snapshot before every node, roll back on exception, escalate with
+`SYSTEM_ERROR`, never leak a stack trace.
+
+**Single-ownership state fields.** Every `CaseState` field has exactly one
+writer (e.g. `issue.verbatim` → ingress, `pending_clarify_item_id` → clarify,
+`declined_actions` → confirm handler, `guard_failures` → resolve's exit guard);
+the three highest-risk fields (`actor`, `evidence`, `pending_action`) are
+enforced with runtime asserts. `user_requested_human` is a ratchet — once true,
+no code path resets it.
+
+**Three-segment write protocol** (D4 completes wiring): PROPOSE — the LLM emits
+an *intent* only; FREEZE — code builds the args, checks policy (deny-by-default,
+4 rules), refuses intents the user already declined, stamps an idempotency key
+and a 5-minute expiry; EXECUTE — four pre-checks, then the write tool runs.
+Write tools never appear in the model's tool list; no tool signature accepts
+`target_user` — identity is injected by the runtime, so "I'm the CEO's
+assistant, reset his password" fails at the architecture layer.
+
+**Guards are deterministic code.** Input Guard: credential redaction,
+attachment refusal, security-signal fast-path (case is persisted first, then
+lifted straight to escalation — no advice given). Output Guard at resolve's
+exit: every citation must exist in this case's evidence ledger; KB citations
+must be VERIFIED (DRAFT is background only, DEPRECATED is excluded at the index
+layer); uncited generic steps alone can never constitute a resolution. One
+in-node retry with the violation fed back, then `guard_failures=2` → E10
+escalation. Tools return a four-state envelope (OK/EMPTY/DEGRADED/ERROR —
+"searched and found nothing" is evidence, not an error) and pass three gate
+layers: stage (read tools only during investigation phases), policy, runtime
+(budget interceptor, actor injection, dedup, retry).
 
 ## 4. Resolution vs. escalation boundary
 

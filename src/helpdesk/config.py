@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -28,6 +29,15 @@ class Settings(BaseSettings):
     model_small: str = "gpt-4o-mini"
     db_path: Path = REPO_ROOT / "helpdesk.db"
     trace_dir: Path = REPO_ROOT / "traces"
+
+    # OpenAI SDK 只读进程环境变量;这两项让 .env 也生效(key 不进代码,guide §5 D3)。
+    # 兼容 OpenAI 协议的国产端点(如百炼 DashScope)经 base_url 切换。
+    openai_api_key: str | None = Field(
+        default=None, validation_alias=AliasChoices("OPENAI_API_KEY")
+    )
+    openai_base_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("OPENAI_BASE_URL")
+    )
 
 
 @lru_cache(maxsize=1)

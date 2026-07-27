@@ -1,16 +1,24 @@
-.PHONY: setup chat test eval demo
+.PHONY: setup chat resume test eval demo
+
+# 优先用项目 venv 的解释器;不存在时回落 PATH 上的 python3
+PY := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 
 setup:
-	pip install -e .
+	$(PY) -m pip install -e .
 
+# 用法:make chat ARGS="--as-user u-alice"
 chat:
-	python -m helpdesk.cli chat
+	$(PY) -m helpdesk.cli chat $(ARGS)
+
+# 用法:make resume CASE=case-xxxx ARGS="--as-user u-alice"
+resume:
+	$(PY) -m helpdesk.cli resume $(CASE) $(ARGS)
 
 test:
-	pytest -q
+	$(PY) -m pytest -q
 
 eval:
-	python eval/run_eval.py
+	$(PY) eval/run_eval.py
 
 demo:
 	@echo "See docs/demo_script.md (produced on D5)"

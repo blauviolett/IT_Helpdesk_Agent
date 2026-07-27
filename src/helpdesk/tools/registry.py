@@ -1,10 +1,15 @@
-"""唯一工具入口(guide §2):运行时 actor 注入 + 去重 + 重试 + 证据/checklist 落账。
+"""唯一工具入口(guide §2):三层门控 + 运行时 actor 注入 + 去重 + 重试 + 落账。
 
-- 三层门控(阶段/策略/运行)按计划 D3 接线;本文件先提供执行骨架。
+- 三层门控(v2.1 C4,D3 接线):
+  ① 阶段门:只读工具仅限调查阶段(INTAKE/INVESTIGATING/AWAITING_CLARIFY,
+     后者覆盖澄清恢复后立即进入的 investigate);写工具仅限 AWAITING_CONFIRM
+     (只可能来自 act handler,D4);
+  ② 策略门:非只读工具执行前 policy.check 必须 ALLOW(deny-by-default);
+  ③ 运行门:预算拦截(触顶拒执行,不落 evidence)+ actor 注入 + 去重 + 重试。
 - 任何工具签名(模型可见 params schema)不得出现 target_user / user_id;
   actor 由本层注入,模型无法指定操作对象(test_tools 静态检查钉死)。
-- 写工具(send_unlock_verification / create_ticket)D4 落地,read_only=False,
-  永不出现在 model_tool_specs() —— 写路径只走三段协议的 act handler。
+- 写工具(send_unlock_verification / create_escalation_ticket)D4 落地,
+  read_only=False,永不出现在 model_tool_specs() —— 写路径只走三段协议的 act。
 - checklist 置位按 guide §2.2 四态映射:OK/EMPTY/DEGRADED → SATISFIED;
   ERROR → UNAVAILABLE(仅覆盖 PENDING,不抹掉已有成功证据)。
 """
@@ -15,19 +20,26 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
+from helpdesk import policy
 from helpdesk.config import load_categories
+from helpdesk.orchestrator.budget import over_budget
 from helpdesk.state.models import (
     Actor,
     CaseState,
     ChecklistStatus,
     EvidenceItem,
+    Phase,
     append_evidence,
 )
 from helpdesk.tools import base
 from helpdesk.tools.adapters import directory, idp, kb, status
 from helpdesk.tools.base import ToolResult, ToolStatus, error_result, hash_args
+
+# 阶段门(①):read_only → 调查阶段;写工具 → 仅 AWAITING_CONFIRM(act,D4)
+_READ_PHASES = frozenset({Phase.INTAKE, Phase.INVESTIGATING, Phase.AWAITING_CLARIFY})
+_WRITE_PHASES = frozenset({Phase.AWAITING_CONFIRM})
 
 
 class NoParams(BaseModel):
@@ -37,6 +49,12 @@ class NoParams(BaseModel):
 class SearchKBParams(BaseModel):
     query: str
     applies_to: list[str] = []
+
+    @field_validator("applies_to", mode="before")
+    @classmethod
+    def _coerce_list(cls, v: Any) -> Any:
+        # 模型边界宽容:实测 qwen 会把单标签传成字符串,包一层即等价
+        return [v] if isinstance(v, str) else v
 
 
 class ServiceParams(BaseModel):
@@ -117,10 +135,23 @@ def execute(state: CaseState, tool_name: str, args: dict[str, Any] | None, ctx: 
     """
     tracer, runtime = ctx.tracer, ctx.runtime
     spec = TOOLS.get(tool_name)
-    if spec is None or not spec.read_only:
-        state.budget.tool_calls += 1  # 预算记账;D3 budget.py 拦截器接管
+    if spec is None:
+        state.budget.tool_calls += 1  # 模型给错名也计入预算,防无谓循环
         tracer.event(state.case_id, "tool_call", tool=tool_name, status="ERROR", reason="unknown_tool")
         return error_result(f"tool not available: {tool_name}", "unknown_tool")
+    # ① 阶段门
+    allowed = _READ_PHASES if spec.read_only else _WRITE_PHASES
+    if state.phase not in allowed:
+        tracer.event(state.case_id, "tool_call", tool=tool_name, status="ERROR", reason="stage_blocked")
+        return error_result(f"{tool_name} not allowed in phase {state.phase.value}", "stage_blocked")
+    # ② 策略门(只对写动作;deny-by-default)
+    if not spec.read_only and policy.check(tool_name).decision != "ALLOW":
+        tracer.event(state.case_id, "tool_call", tool=tool_name, status="ERROR", reason="policy_denied")
+        return error_result(f"{tool_name} denied by policy", "policy_denied")
+    # ③ 运行门:预算拦截(超限后果由 decide E5 裁决,此处只拒执行)
+    if (dim := over_budget(state.budget)) is not None:
+        tracer.event(state.case_id, "tool_call", tool=tool_name, status="ERROR", reason="budget_exhausted", dimension=dim)
+        return error_result(f"budget exhausted ({dim})", "budget_exhausted")
     try:
         params = spec.params.model_validate(args or {})
     except ValidationError:

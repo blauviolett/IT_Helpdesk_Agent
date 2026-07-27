@@ -16,9 +16,12 @@ from helpdesk.state.models import Budget
 M = TypeVar("M", bound=BaseModel)
 
 # 每 token 单价(input, output;USD)。粗粒度记账,服务于 E5 预算门,非精确计费。
+# qwen 档为百炼列表价换算的近似值(flash 档偏保守高估,方向安全;D5 以实测校准)。
 _PRICES: dict[str, tuple[float, float]] = {
     "gpt-4o": (2.5e-06, 1.0e-05),
     "gpt-4o-mini": (1.5e-07, 6.0e-07),
+    "qwen3.7-max": (2.5e-06, 7.5e-06),
+    "qwen3.7-flash-2026-07-15": (1.5e-07, 6.0e-07),
 }
 _DEFAULT_PRICE = (2.5e-06, 1.0e-05)
 
@@ -38,7 +41,16 @@ class OpenAIClient:
         from openai import OpenAI
 
         self._settings = settings or get_settings()
-        self._client = OpenAI()
+        # api_key / base_url 经 Settings 从 .env 读入(SDK 只认进程环境变量,
+        # 直接 OpenAI() 会漏掉 .env);None 时回落 SDK 默认行为。
+        # 显式超时:SDK 默认 600s×3 次重试,一次网络抖动可静默挂近半小时;
+        # 收紧到 120s×2 次,仍挂则异常上抛,由 runner E4 快照回滚兜底(D3 实测)。
+        self._client = OpenAI(
+            api_key=self._settings.openai_api_key,
+            base_url=self._settings.openai_base_url,
+            timeout=120.0,
+            max_retries=1,
+        )
 
     def _model(self, tier: str) -> str:
         return self._settings.model_main if tier == "MAIN" else self._settings.model_small

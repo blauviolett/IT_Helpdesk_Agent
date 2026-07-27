@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from helpdesk.orchestrator.gates import Branch
-from helpdesk.state.models import CaseState, Phase
+from helpdesk.state.models import CaseState, Phase, ResolutionType
 
 # phase → 消息入口(guide §4.2)。CLOSED / 无 case 由 ingress 建新 case,不进本表;
 # INTAKE / INVESTIGATING 是中间态,消息恢复直接回 decide(None)或重进 intake。
@@ -33,8 +33,6 @@ _BRANCH_NODE: dict[Branch, str | None] = {
 }
 
 # 节点完成后的 phase(phase 唯一写入者 = transition/runner)。
-# resolve 的后置 phase 依 resolution_type 分派(GUIDED/INFORMATIONAL → AWAITING_VERIFY,
-# ACTION → AWAITING_CONFIRM),按计划 D3/D4 扩展。
 _POST_PHASE: dict[str, Phase] = {
     "intake": Phase.INVESTIGATING,
     "investigate": Phase.INVESTIGATING,
@@ -63,6 +61,16 @@ def on_decision(branch: Branch) -> str | None:
 
 
 def apply_post_phase(state: CaseState, node_name: str) -> None:
+    if node_name == "resolve":
+        # 依 resolution_type 分派:ACTION → AWAITING_CONFIRM;GUIDED/INFORMATIONAL →
+        # AWAITING_VERIFY;None(Output Guard 两次未过,诊断已清空)→ phase 不动,
+        # 回 decide 由 E10 承接。
+        rt = state.diagnosis.resolution_type
+        if rt is ResolutionType.ACTION:
+            state.phase = Phase.AWAITING_CONFIRM
+        elif rt is not None:
+            state.phase = Phase.AWAITING_VERIFY
+        return
     if node_name in _POST_PHASE:
         state.phase = _POST_PHASE[node_name]
 
