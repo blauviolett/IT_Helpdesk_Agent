@@ -4,6 +4,7 @@
 PY := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 
 setup:
+	$(PY) -m pip install --upgrade pip  # 系统自带 pip 过旧,不支持 pyproject 可编辑安装
 	$(PY) -m pip install -e .
 
 # 用法:make chat ARGS="--as-user u-alice"
