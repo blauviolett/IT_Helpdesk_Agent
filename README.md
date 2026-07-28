@@ -167,9 +167,12 @@ exists to exercise a specific failure mode, not to pad the tool list:
 
 ## 6. How to run
 
+Requires Python **3.11+** (`python3 --version`; on stock macOS use `python3.12`
+from Homebrew or python.org).
+
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-make setup            # pip install -e .
+python3.12 -m venv .venv && source .venv/bin/activate   # or any python >= 3.11
+make setup            # upgrades pip, then pip install -e .
 cp .env.example .env  # add OPENAI_API_KEY (+ optional OPENAI_BASE_URL / model overrides)
 make chat ARGS="--as-user u-alice"   # start a conversation as a directory user
 make resume CASE=case-xxxx ARGS="--as-user u-alice"   # continue across processes
