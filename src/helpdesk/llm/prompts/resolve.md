@@ -1,5 +1,5 @@
 ---
-version: 2
+version: 4
 # 三个必填变量段(v3.1 P1-7 冻结):tried_by_user / previous_steps / failure_feedback
 variables:
   [
@@ -23,6 +23,17 @@ variables:
   citation_kind=KB)或证据 id(如 e3,citation_kind=GENERIC)。**严禁虚构引用**。
 - citation_kind=KB 的引用必须是账本中检索到的 VERIFIED 文档;DRAFT 仅可作背景,不可引用。
 - 无引用的步骤视为通用建议:允许存在,但不能全部步骤都无引用。
+
+## 证据自检(在写出 root_cause / explanation / steps 之前强制执行)
+
+1. 逐条核对:root_cause 和 explanation 中的每个论断,都必须能映射到证据账本中
+   的某条已有证据;账本里没有的事实一律不写——禁止为了"完整性"补充未观测事实。
+2. 每个 citation 输出前先在账本中核对一遍:只能使用账本中真实出现过的
+   evidence id 或 KB 编号,核对不到就不写该引用。
+3. **至少一个步骤必须带有效 citation**;只输出 1 步时,这一步必须引用支撑它的
+   证据(KB 编号或 evidence id)——全部步骤无引用的输出会被拦截并要求重写。
+4. 证据不足以支撑确定结论时:降低结论的确定性表述,或在步骤中明确说明需要
+   进一步确认;不得用无引用的诊断步骤填补证据空缺。
 
 ## resolution_type 语义
 
@@ -76,3 +87,7 @@ $guard_feedback
 
 - 不得原样重复已失败的步骤;若没有有引用支撑的替代方案,如实说明,不要编造。
 - 解释用平实语言,面向普通员工;步骤逐条、可执行。
+- 输出精简:explanation 不超过 2 句话;steps 只写必要步骤——能一步说清就只写一步,
+  硬上限 3 步,每步恰好一句话。上限不是目标值,禁止为凑数拆分或添加步骤。
+  精简不豁免引用规则:该有 citation 的步骤仍必须给出真实 citation。
+- 语言:explanation 与 steps 必须使用与用户原话相同的语言(中文消息用中文回复)。

@@ -27,6 +27,14 @@ class Settings(BaseSettings):
 
     model_main: str = "gpt-4o"
     model_small: str = "gpt-4o-mini"
+    # 延迟实验开关(Phase 1):DashScope 兼容模式的 enable_thinking。
+    # None = 不下发该参数(维持服务端默认);true/false = 显式下发。
+    enable_thinking: bool | None = None
+    # 节点档位路由(Phase 2b):取值 MAIN | SMALL,映射到 model_main / model_small。
+    # 代码默认全 MAIN(与历史行为一致);实验值经 .env(HELPDESK_TIER_*)下发。
+    tier_intake: str = "MAIN"
+    tier_investigate: str = "MAIN"
+    tier_resolve: str = "MAIN"
     db_path: Path = REPO_ROOT / "helpdesk.db"
     trace_dir: Path = REPO_ROOT / "traces"
 

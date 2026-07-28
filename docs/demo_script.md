@@ -65,7 +65,7 @@ make chat ARGS="--as-user u-dan --fixture status_b"
 
 ## 4. 收尾 60 秒
 
-- `eval/results/latest.md`:5/5 PASS + p50/p95/成本实测;**主动说延迟没达标**及原因与改法(README §7)。
+- `eval/results/latest.md`:5/5 PASS + p50/p95/成本实测;**主动讲延迟优化记录**(README §7):89.4s → 首轮 p50 8–9s,四步各省多少、两次翻车怎么修的,全程 L1/L2 门禁。
 - README §7 失败案例分析:评测从 2/5 修到 5/5 的过程如实在案;L2 不确定性由 L1(112 条确定性测试)兜底。
 - 已知缺口(README §8)是主动声明的范围裁剪,不是没想到。
 

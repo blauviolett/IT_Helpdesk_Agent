@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel
 
@@ -56,6 +56,12 @@ class OpenAIClient:
     def _model(self, tier: str) -> str:
         return self._settings.model_main if tier == "MAIN" else self._settings.model_small
 
+    def _extra_body(self) -> dict[str, Any] | None:
+        """enable_thinking 实验开关(config):None 时不下发,维持服务端默认。"""
+        if self._settings.enable_thinking is None:
+            return None
+        return {"enable_thinking": self._settings.enable_thinking}
+
     def _bill(self, budget: Budget | None, model: str, usage) -> None:
         if budget is None or usage is None:
             return
@@ -66,12 +72,22 @@ class OpenAIClient:
         self, node: str, prompt: str, schema: type[M], *, tier: str = "MAIN", budget: Budget | None = None
     ) -> M:
         model = self._model(tier)
-        with perf.span("llm_api", node=node, tier=tier, model=model, mode="structured"):
+        usage_meta: dict[str, Any] = {}  # span 结束时才序列化,块内回填 usage 可见
+        with perf.span("llm_api", node=node, tier=tier, model=model, mode="structured", usage=usage_meta):
+            # system 消息作用有二(DashScope 对部分档位如 flash 把结构化输出降级为
+            # json_object 模式):① 必须含 "JSON" 字样,否则 400;② 降级模式下服务端
+            # 不再强制 schema、模型也看不到 schema,故把 schema 本体注入,由模型自约束
+            # (原生 json_schema 档位不受影响,服务端照旧强约束)。
             rsp = self._client.beta.chat.completions.parse(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": _schema_system_message(schema)},
+                    {"role": "user", "content": prompt},
+                ],
                 response_format=schema,
+                extra_body=self._extra_body(),
             )
+            _fill_usage(usage_meta, rsp.usage)
         self._bill(budget, model, rsp.usage)
         parsed = rsp.choices[0].message.parsed
         assert parsed is not None, f"structured parse failed for node {node}"
@@ -81,9 +97,35 @@ class OpenAIClient:
         self, node: str, prompt: str, *, tier: str = "MAIN", budget: Budget | None = None
     ) -> str:
         model = self._model(tier)
-        with perf.span("llm_api", node=node, tier=tier, model=model, mode="text"):
+        usage_meta: dict[str, Any] = {}
+        with perf.span("llm_api", node=node, tier=tier, model=model, mode="text", usage=usage_meta):
             rsp = self._client.chat.completions.create(
-                model=model, messages=[{"role": "user", "content": prompt}]
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                extra_body=self._extra_body(),
             )
+            _fill_usage(usage_meta, rsp.usage)
         self._bill(budget, model, rsp.usage)
         return rsp.choices[0].message.content or ""
+
+
+def _schema_system_message(schema: type[BaseModel]) -> str:
+    import json
+
+    return (
+        "只输出一个 JSON 对象,不输出任何其他内容;必须严格符合以下 JSON Schema"
+        "(字段名、枚举值、类型一律精确匹配):\n"
+        + json.dumps(schema.model_json_schema(), ensure_ascii=False)
+    )
+
+
+def _fill_usage(meta: dict[str, Any], usage: Any) -> None:
+    """把 usage 回填进 perf span meta(纯观测);reasoning_tokens 用于验证 thinking 假设。"""
+    if usage is None:
+        return
+    meta["prompt_tokens"] = usage.prompt_tokens
+    meta["completion_tokens"] = usage.completion_tokens
+    details = getattr(usage, "completion_tokens_details", None)
+    reasoning = getattr(details, "reasoning_tokens", None) if details else None
+    if reasoning is not None:
+        meta["reasoning_tokens"] = reasoning

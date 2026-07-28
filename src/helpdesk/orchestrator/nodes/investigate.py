@@ -18,7 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from helpdesk.config import load_categories, load_limits
+from helpdesk.config import get_settings, load_categories, load_limits
 from helpdesk.guards import consistency_checks
 from helpdesk.llm import render_prompt
 from helpdesk.orchestrator import handlers
@@ -71,7 +71,8 @@ def run_investigate(state: CaseState, ctx: Any) -> None:
         for call in calls:
             registry.execute(state, call.tool, call.args, ctx)
         out = ctx.llm.complete_structured(
-            "investigate", _prompt(state), InvestigateOutput, budget=state.budget
+            "investigate", _prompt(state), InvestigateOutput,
+            tier=get_settings().tier_investigate, budget=state.budget,
         )
         _apply(state, out)
         calls = out.tool_calls

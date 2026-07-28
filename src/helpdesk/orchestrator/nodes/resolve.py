@@ -17,6 +17,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from helpdesk import policy
+from helpdesk.config import get_settings
 from helpdesk.guards import output_guard
 from helpdesk.llm import render_prompt
 from helpdesk.orchestrator.nodes import say
@@ -54,7 +55,9 @@ def run_resolve(state: CaseState, ctx: Any) -> None:
 
     for _attempt in (1, 2):
         prompt = _prompt(state, previous_steps, failure_feedback, guard_feedback)
-        out = ctx.llm.complete_structured("resolve", prompt, ResolveOutput, budget=state.budget)
+        out = ctx.llm.complete_structured(
+            "resolve", prompt, ResolveOutput, tier=get_settings().tier_resolve, budget=state.budget
+        )
         steps = [DiagnosisStep(**s.model_dump()) for s in out.steps]
         violations = output_guard(state, steps)
         if violations:

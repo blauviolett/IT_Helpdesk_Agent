@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from helpdesk.config import load_policy
+from helpdesk.config import get_settings, load_policy
 from helpdesk.llm import render_prompt
 from helpdesk.orchestrator.nodes import recent_messages
 from helpdesk.state.models import CaseState, Category, TriedStep
@@ -44,7 +44,9 @@ def run_intake(state: CaseState, ctx: Any) -> None:
         categories=", ".join(c.value for c in Category),
         resource_enum=enum_desc,
     )
-    out = ctx.llm.complete_structured("intake", prompt, IntakeOutput, budget=state.budget)
+    out = ctx.llm.complete_structured(
+        "intake", prompt, IntakeOutput, tier=get_settings().tier_intake, budget=state.budget
+    )
 
     issue = state.issue
     issue.category = out.category

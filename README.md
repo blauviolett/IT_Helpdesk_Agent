@@ -213,7 +213,7 @@ Two tiers, never mixed:
 | L2 golden outcome/tool assertions | 5/5 | **5/5** (after 4 fix iterations: 2/5 → 3/5 → 3/5 → 4/5 → 5/5) |
 | Unauthorized write actions | 0 | **0** across all eval runs (the one write executed only after an explicit YES) |
 | Hallucinated steps caught by citation guard | ≥ 1 reproducible | **2 live interceptions on record**: fabricated citation `h1` blocked by Output Guard (`traces/case-3f6f0f49162d.jsonl`); invalid intent `send_unlock_request` refused at FREEZE (`traces/case-159e39575d9f.jsonl`) |
-| Per-turn latency p50 / p95 | < 15s / < 30s | **34.1s / 285.7s — target missed.** Honest miss: qwen3.7-max spends 15–60s per LLM call and a turn chains up to 4 calls (intake → investigate×2 → resolve). Levers: smaller/faster tier for investigate batches, parallel tool batches, streaming. Not reachable by prompt tuning alone. |
+| Per-turn latency p50 / p95 | < 15s / < 30s | **First-turn p50 8–9s, worst observed <14s — target met** after the 2026-07-29 optimization pass (see "Performance optimization record" below). Originally missed badly: 89.4s first turn (34.1s / 285.7s p50/p95 on qwen3.7-max) — the miss and the path out are both on record. |
 | Cost per case p50 | < $0.05 | **$0.038** (range $0.020–$0.053; full 5-case run ≈ $0.18) |
 
 Deflection rate ≥ 60% / TTR ≤ 2 min / "0 hallucination" are **hypotheses**, not
@@ -250,6 +250,43 @@ Residual risk, stated plainly: L2 passes are **not deterministic**. The same
 suite went 2/5 → 5/5 across runs as fixes landed; a re-run can still flake on
 model mood (that is why every boundary that matters is asserted in L1, where
 flaky is impossible).
+
+**Performance optimization record (2026-07-29).** First turn chains 4
+sequential LLM calls (intake → investigate×2 → resolve) — frozen by the state
+machine and the D2 acceptance, so the only lever was making each call fast.
+Baseline: **89.4s** first turn (qwen3.7-plus, all nodes), 99.97% of it in the
+LLM API. Steps, in order, each gated on L1 112/112 + L2 5/5:
+
+1. **Disable thinking** (`enable_thinking=false`, client-level): 89.4s → 18.4s.
+   Reasoning tokens were the dominant cost; behavior unchanged.
+2. **Output-side prompt budgets** (investigate v3 / resolve v3): 18.4s → 15.1s.
+   Lesson learned: "at most N steps" anchors the model to produce exactly N —
+   the working phrasing is "as few as needed, hard cap N".
+3. **Model tier routing** (intake/investigate → qwen3.7-flash, resolve stays
+   qwen3.7-plus; `HELPDESK_TIER_*`): 15.1s → 9.7s p50, cost ≈ −60%. Required a
+   client-side compat shim: DashScope degrades flash structured output to
+   `json_object`, so the JSON schema is injected into the system message to
+   keep structured-output behavior identical across tiers.
+4. **Investigate mandatory-call rule + resolve evidence self-check**
+   (investigate v3 rule 7 / resolve v4): 9.7s → **8.3–8.9s p50**, and removed
+   the two failure modes below.
+
+Final: **first-turn p50 8–9s, worst observed <14s** (one guard-retry sample).
+
+Two issues surfaced by the flash rollout, both **resolved** and covered above:
+
+- **Investigate returned empty `tool_calls` early** (3/3 samples on flash)
+  while a critical checklist item was still PENDING; the decide gate bounced
+  it back each time (one wasted LLM call; worst case the `_MAX_HOPS` fuse).
+  Fixed by prompt rule 7: tool calls are mandatory while a critical gap
+  remains and a serving tool exists — incident-stop stays the only exception
+  (GC-02 still passes). 0/3 recurrence after the fix.
+- **Resolve first output tripped the citation guard** (~1 in 10 replays:
+  a single-step plan whose only step carried no citation → "no valid citation
+  anywhere" violation; +4–5s retry tail). Fixed by an evidence self-check
+  block in resolve v4 (every claim must map to ledger evidence; a single-step
+  plan must cite). 22/22 first-pass after the fix vs 19/20 before; the guard
+  retry path remains as the backstop.
 
 ## 8. Known gaps & assumptions
 
@@ -306,9 +343,11 @@ Ordered by return on effort; every item has an existing seam to plug into:
    and feed the per-category verdicts back into checklist/KB fixes. The
    fastest path to a genuinely better boundary; entry point: `outcome` +
    `reason_code` are already attributed at ticket-creation time in the trace.
-2. **Latency** — the one measured target we missed. Move investigate batches
-   to the SMALL tier, parallelize tool execution inside a batch, stream
-   replies. Entry point: `LLMClient` protocol already carries a `tier` flag.
+2. **Latency, next increment** — the target is now met (p50 8–9s, §7), and
+   the cheap levers (thinking off, tier routing, prompt budgets) are spent.
+   What's left: parallelize tool execution inside a batch, stream the resolve
+   reply for perceived latency. Entry point: batches already arrive as lists;
+   `complete_text` is the streaming seam.
 3. **KB gap loop** — cluster `ESCALATED + no-KB-match` cases into KB-writing
    tasks. Entry point: `search_kb` EMPTY results are already in the evidence
    ledger.
