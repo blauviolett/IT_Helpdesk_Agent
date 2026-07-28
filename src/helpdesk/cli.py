@@ -60,6 +60,8 @@ def _loop(case_id: str | None, as_user: str | None, fixture: str, fail: list[str
             break
         seen = _message_count(ctx, case_id)
         state = handle_message(text, ctx=ctx, case_id=case_id, as_user=as_user)
+        if state.case_id != case_id:
+            seen = 0  # CLOSED → 新 case:回复从新 case 的消息流从头显示
         case_id = state.case_id
         _print_replies(state, seen)
         _print_status(state)

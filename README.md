@@ -23,7 +23,7 @@ the KB, service status, and the user directory could have settled in minutes.
 
 The user is the **employee with the IT problem**, not the helpdesk operator.
 Interaction model: a CLI chat (`make chat`), single conversation thread per case,
-resumable across processes (`--resume <case_id>`).
+resumable across processes (`make resume CASE=<case_id>`).
 
 ## 2. Why agentic (vs. chatbot / FAQ search / rule engine)
 
@@ -168,34 +168,147 @@ exists to exercise a specific failure mode, not to pad the tool list:
 ## 6. How to run
 
 ```bash
-make setup          # pip install -e .
-cp .env.example .env  # add your OPENAI_API_KEY
-make chat           # start a conversation
-make test           # L1 deterministic suite (no LLM, no network)
-make eval           # L2 golden scenarios (real model)
+python3 -m venv .venv && source .venv/bin/activate
+make setup            # pip install -e .
+cp .env.example .env  # add OPENAI_API_KEY (+ optional OPENAI_BASE_URL / model overrides)
+make chat ARGS="--as-user u-alice"   # start a conversation as a directory user
+make resume CASE=case-xxxx ARGS="--as-user u-alice"   # continue across processes
+make test             # L1 deterministic suite (no LLM, no network; FakeLLM)
+make eval             # L2 golden scenarios (real model, ~$0.20 / run)
 ```
+
+Useful chat switches: `--fixture status_b` (regional-incident world), `--fail
+get_account_status` (inject tool failure, repeatable). Users to try: `u-alice`
+(locked Okta account), `u-bob` (old VPN client), `u-carol` (new hire, no
+entitlements), `u-eve` (planted directory contradiction). Every case writes a
+JSONL trace to `traces/<case_id>.jsonl` (nodes, tool calls, gate decisions,
+cost, latency).
 
 ## 7. Evaluation
 
-*(filled on D5 — two-tier evaluation; TARGET vs MEASURED columns, never mixed)*
+Two tiers, never mixed:
 
-| Metric | TARGET (unvalidated assumption) | MEASURED (5 golden cases) |
+- **L1 — deterministic suite** (`make test`, 112 tests, FakeLLM, no network):
+  every escalation gate triggered one by one, R1–R3 failures, gate
+  short-circuit order, all 7 recovery routes (incl. the E4
+  poison-then-rollback test), the full write protocol (freeze / expiry /
+  idempotency single-consume / decline / malicious `target_user` ignored /
+  write tool exactly once), policy deny-by-default, Output-Guard citation
+  checks, packet field allowlists, classifier wordlists (≥12 assertions incl.
+  negation traps like "人工智能真好用").
+- **L2 — golden scenarios** (`make eval`, real model): the 5 required
+  conversations as YAML cases in `eval/golden/`, executed by
+  `eval/run_eval.py` (~110 lines, exactly 4 assertion keys —
+  `expect_outcome` / `expect_escalated` / `must_call_tools` /
+  `must_not_call_tools` — zero per-case special-casing). Everything not
+  expressible in those keys was deliberately moved to L1 (assertion-ownership
+  table in `docs/mvp_plan_v3.1.md` P1-1). Results: `eval/results/latest.md`.
+
+| Metric | TARGET (design goal, unvalidated) | MEASURED (final run, N=5, qwen3.7-max) |
 |---|---|---|
-| *(D5)* | | |
+| L1 deterministic assertions | 100% | **112/112 (100%)** |
+| L2 golden outcome/tool assertions | 5/5 | **5/5** (after 4 fix iterations: 2/5 → 3/5 → 3/5 → 4/5 → 5/5) |
+| Unauthorized write actions | 0 | **0** across all eval runs (the one write executed only after an explicit YES) |
+| Hallucinated steps caught by citation guard | ≥ 1 reproducible | **2 live interceptions on record**: fabricated citation `h1` blocked by Output Guard (`traces/case-3f6f0f49162d.jsonl`); invalid intent `send_unlock_request` refused at FREEZE (`traces/case-159e39575d9f.jsonl`) |
+| Per-turn latency p50 / p95 | < 15s / < 30s | **34.1s / 285.7s — target missed.** Honest miss: qwen3.7-max spends 15–60s per LLM call and a turn chains up to 4 calls (intake → investigate×2 → resolve). Levers: smaller/faster tier for investigate batches, parallel tool batches, streaming. Not reachable by prompt tuning alone. |
+| Cost per case p50 | < $0.05 | **$0.038** (range $0.020–$0.053; full 5-case run ≈ $0.18) |
+
+Deflection rate ≥ 60% / TTR ≤ 2 min / "0 hallucination" are **hypotheses**, not
+claims — they need real traffic, and 5 authored cases cannot validate them.
+
+**Failure-case analysis (what actually broke during eval, all recorded as-is):**
+
+1. **Conservative hypotheses starved R3** (worst offender, 3/5 cases failed on
+   it): evidence was conclusive — the agent's own escalation narrative said
+   "symptoms match KB-1002 exactly" — yet hypotheses stayed OPEN, so R3
+   (exactly one SUPPORTED) failed and cases escalated as LOW_CONFIDENCE.
+   Fix: investigate prompt v2 tells the model that leaving a proven hypothesis
+   OPEN *is* a failed investigation. The gate itself was not touched.
+2. **Garbage entity extraction**: intake once produced `affected_systems:
+   ["daily"]` (from "今天"), the first status query hit a nonexistent service,
+   and the EU incident was never found. Fix: intake prompt v2 pins the field to
+   systems actually named by the user and warns it is used verbatim as a query
+   parameter.
+3. **Wrong KB filter tag**: the model passed `applies_to: "NETWORK_VPN"`
+   (category name) where the KB used `vpn`; the hard filter silently emptied
+   the result. Fix: tag vocabulary documented in the tool description +
+   KB-1002 tagged with its category alias.
+4. **Under- then over-eager write action**: resolve first rendered the unlock
+   as GUIDED self-service steps (never proposing the ACTION); after the intent
+   vocabulary was added, it proposed `send_unlock_verification` for a *VPN*
+   problem. The protocol held both times (no execution without explicit YES) —
+   the fix was scoping the intent's applicability in the prompt, not new code.
+5. **SMALL-classifier misread**: in AWAITING_VERIFY, "好的,发吧" ("ok, send
+   it") was classified RESOLVED and closed the case prematurely. Fix: label
+   semantics added to the fallback prompt ("agreeing/urging an action is
+   UNKNOWN, not RESOLVED").
+
+Residual risk, stated plainly: L2 passes are **not deterministic**. The same
+suite went 2/5 → 5/5 across runs as fixes landed; a re-run can still flake on
+model mood (that is why every boundary that matters is asserted in L1, where
+flaky is impossible).
 
 ## 8. Known gaps & assumptions
 
-*(finalized on D5; standing list from the plan, recorded up front)*
+Declared up front — these are deliberate scope cuts, not oversights:
 
-- Human-request detection is a deterministic word list; oblique phrasings can slip
-  through. The cost of a miss is the user rephrasing — not a safety issue.
-- No crash-recovery reconciliation, no optimistic locking, no tool circuit
-  breaker, no TTL auto-close, no human-side webhook.
-- User mid-conversation abandonment (ABANDONED) is not modeled.
-- Output Guard checks citation existence + authority, not content entailment.
-- `send_unlock_verification` realism depends on the IdP (Okta self-service unlock
-  policy; Entra is not equivalent).
+- **Human-request detection** is a deterministic word list with a SMALL-model
+  fallback; oblique phrasings ("这个 AI 不行,换个人来") can slip through. The
+  cost of a miss is the user rephrasing — never a safety issue, because the
+  ratchet only ever escalates.
+- **No crash-recovery reconciliation**: if the process dies between a write
+  tool succeeding and the state being persisted, nothing replays or reconciles
+  the effect (no effects outbox). State is snapshot-rolled-back within a turn
+  (E4), but cross-process consistency is best-effort.
+- **No optimistic locking / concurrent-session merge** — one active
+  conversation per case is assumed.
+- **No tool circuit breaker** (failures are per-call retried once, then honest
+  ERROR), **no 7-day TTL auto-close**, **no human-side webhook** (ticket state
+  changes don't push back into the conversation).
+- **No attachment handling** — the Input Guard refuses attachments with an
+  explanation rather than silently ignoring them.
+- **No cross-session memory**: each case starts clean; resolution history is a
+  suggested source we deliberately did not mock.
+- **No LLM-as-Judge gating** — quality gates are deterministic (citations,
+  policy, consistency); prose quality is human-spot-checked only.
+- **No same-turn double conclusion**: a mixed request (e.g. access request +
+  incident report) resolves to one primary path per turn (ACCESS_REQUEST
+  escalates as a whole).
+- **User mid-conversation abandonment (ABANDONED)** is not modeled — an
+  unanswered AWAITING_* case just sits there.
+- **Output Guard checks citation existence + authority, not content
+  entailment**: a step citing a real KB doc can still misstate what the doc
+  says. Entailment checking is the known next hardening step.
+- `send_unlock_verification` realism depends on the IdP (Okta self-service
+  unlock policy; Entra is not equivalent).
+- `confidence` (HIGH/LOW) affects wording and disclosure only; it is
+  deliberately excluded from safety decisions (no weighted scores, no
+  threshold bands).
 
 ## 9. What I'd improve with more time
 
-*(filled on D5 — future extensions with entry points and reversal conditions)*
+Ordered by return on effort; every item has an existing seam to plug into:
+
+1. **Escalation quality loop** — label every escalation "was it necessary?"
+   and feed the per-category verdicts back into checklist/KB fixes. The
+   fastest path to a genuinely better boundary; entry point: `outcome` +
+   `reason_code` are already attributed at ticket-creation time in the trace.
+2. **Latency** — the one measured target we missed. Move investigate batches
+   to the SMALL tier, parallelize tool execution inside a batch, stream
+   replies. Entry point: `LLMClient` protocol already carries a `tier` flag.
+3. **KB gap loop** — cluster `ESCALATED + no-KB-match` cases into KB-writing
+   tasks. Entry point: `search_kb` EMPTY results are already in the evidence
+   ledger.
+4. **Slack adapter + real SSO, shadow mode first** — the CLI is one adapter
+   behind `handle_message(text, ctx, case_id, as_user)`; a Slack bot is
+   another. `--as-user` becomes the SSO principal. Ship read-only ("advisor")
+   before enabling the write path, per-category feature flags on rollback.
+5. **Output-Guard entailment check** — today citations must exist and be
+   VERIFIED; add "does the step actually follow from the cited section"
+   (NLI-style) as a third check. Entry point: `guards.output_guard` already
+   receives step + citation pairs.
+6. **Real integrations** — ServiceNow for `create_escalation_ticket`, Okta API
+   for the IdP adapter, audit logging with retention. Every adapter is a
+   Protocol behind `tools/adapters/`; the swap is mechanical. SQLite → Postgres
+   behind the `Store` protocol; BM25 → embeddings behind the `Retriever`
+   protocol *if* recall data ever justifies it.

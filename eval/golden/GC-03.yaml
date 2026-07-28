@@ -1,0 +1,15 @@
+# GC-03 VPN 模糊描述 → clarify(guide §7.3):"VPN 有点问题"缺 critical QUESTION 项
+# vpn_symptom → L4 ASK → clarify 提问 → 回答后恢复 handler 置位(P1-3 闭环)→
+# investigate(KB-1002)→ resolve GUIDED → AWAITING_VERIFY → "好了" → close。
+# "经 AWAITING_CLARIFY / 最终 GUIDED"不在 4 key 值域,由 outcome 间接覆盖。
+id: GC-03
+title: VPN 模糊描述经澄清后 GUIDED 解决
+as_user: u-bob
+fixture: status_a
+turns:
+  - "VPN 有点问题"
+  - "每隔十几分钟就断一次,然后自动重连,内网系统时不时打不开"
+  - "好了,按你说的做完就不断了"
+assert:
+  expect_outcome: RESOLVED_BY_AGENT
+  must_call_tools: [search_kb]

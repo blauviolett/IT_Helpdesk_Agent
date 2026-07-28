@@ -13,6 +13,6 @@ traces/
 __pycache__/
 *.pyc
 .pytest_cache/
-eval/results/
+eval/results/*
 !eval/results/latest.md
 *.db

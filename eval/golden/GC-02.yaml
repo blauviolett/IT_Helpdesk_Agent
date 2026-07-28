@@ -1,0 +1,15 @@
+# GC-02 Salesforce 区域事故告知(guide §7.3):fixture=status_b(EU 事故 INC-4021),
+# u-dan 在 Dublin(EU)。investigate 首批查到事故即停止调查(prompt 规则 2)→
+# resolve INFORMATIONAL → 用户确认 → close INFORMED_KNOWN_INCIDENT。
+# must_not_call: search_kb 保留前提成立(investigate.md 含"事故已解释问题即停止调查");
+# 若 live 演练偶发 flaky,按预授权移除该 key 只留 outcome(v3.1 冻结检查表)。
+id: GC-02
+title: Salesforce 区域事故告知
+as_user: u-dan
+fixture: status_b
+turns:
+  - "Salesforce 今天特别慢,页面要转半天才加载出来,我们组好几个人都这样"
+  - "好了,谢谢"
+assert:
+  expect_outcome: INFORMED_KNOWN_INCIDENT
+  must_not_call_tools: [search_kb]

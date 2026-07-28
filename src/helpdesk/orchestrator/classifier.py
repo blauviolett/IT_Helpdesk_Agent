@@ -113,10 +113,21 @@ def classify_escalated(text: str, llm: Any = None, budget: Any = None) -> str:
 
 
 _SMALL_PROMPT = """你是 IT Helpdesk 的短文本分类器。对用户消息做 {kind} 分类。
+判定语义:{rules}
 只输出以下标签之一,不输出任何其他内容:{labels}
 拿不准时输出 {default}。
 
 用户消息:{text}"""
+
+# 每类标签语义(兜底 prompt 用;词表与否定规则仍是唯一的确定性第一道)
+_KIND_RULES: dict[str, str] = {
+    "confirm": "YES=明确同意执行该操作;NO=明确拒绝;提问、含糊、闲聊一律 OTHER。",
+    "verify": (
+        "RESOLVED=用户明确说问题已经解决;FAILED=明确说没解决;"
+        "同意/催促执行某操作(如\"发吧\")、尚未验证、提问或含糊一律 UNKNOWN。"
+    ),
+    "escalated": "RESOLVED=用户明确说问题已经解决;其余(追问/补充/催促)一律 OTHER。",
+}
 
 
 def _small_fallback(
@@ -127,7 +138,10 @@ def _small_fallback(
         return default
     raw = llm.complete_text(
         "classifier",
-        _SMALL_PROMPT.format(kind=kind, labels=" / ".join(labels), default=default, text=text),
+        _SMALL_PROMPT.format(
+            kind=kind, rules=_KIND_RULES[kind],
+            labels=" / ".join(labels), default=default, text=text,
+        ),
         tier="SMALL",
         budget=budget,
     )

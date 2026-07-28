@@ -1,0 +1,13 @@
+# GC-05 Jenkins+Tableau 多系统(guide §7.3):fixture=status_b(change log 含
+# CHG-2105 Jenkins LDAP 插件升级)。MULTI_SYSTEM ∉ AUTO_RESOLVABLE → R1 恒 FAIL →
+# 调查闭合 critical(check_service_status + get_recent_changes)后 L4 无路 →
+# L5 ESCALATE(LOW_CONFIDENCE)。"P3 定级"断言已按 P1-1 移 L1(test_gates)。
+id: GC-05
+title: Jenkins+Tableau 多系统故障正确升级
+as_user: u-eve
+fixture: status_b
+turns:
+  - "从昨天开始 Jenkins 登录特别慢,今天连 Tableau 上的报表数据也不更新了,感觉不止一个系统有问题"
+assert:
+  expect_escalated: true
+  must_call_tools: [check_service_status, get_recent_changes]

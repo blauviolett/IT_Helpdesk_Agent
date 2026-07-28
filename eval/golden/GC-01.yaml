@@ -1,0 +1,15 @@
+# GC-01 账号锁定完整闭环(guide §7.3):
+# intake → investigate → resolve(ACTION,冻结 send_unlock_verification)
+# → AWAITING_CONFIRM → 显式 YES → act → AWAITING_VERIFY → "好了" → close。
+# 断言只用 4 key;"写工具恰好一次 / 引用合法"已按 P1-1 归属表移 L1 / 运行时 Guard。
+id: GC-01
+title: 账号锁定完整闭环
+as_user: u-alice
+fixture: status_a
+turns:
+  - "Okta 一直登录不上,说账号被锁了"
+  - "好的,发吧"
+  - "好了,能登录了"
+assert:
+  expect_outcome: RESOLVED_BY_AGENT
+  must_call_tools: [get_account_status, search_kb, send_unlock_verification]

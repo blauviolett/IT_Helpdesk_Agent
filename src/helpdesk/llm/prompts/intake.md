@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 variables: [verbatim, messages, categories, resource_enum]
 ---
 
@@ -18,13 +18,18 @@ $categories
 - 多个不相关系统同时异常 → MULTI_SYSTEM
 - 钓鱼 / 泄密 / 可疑登录等安全事件 → SECURITY
 - 非 IT 事务(报销 / HR / 设施)→ OUT_OF_SCOPE_NON_IT
+- 硬件/设备故障(键盘、鼠标、显示器、笔记本损坏)属于 IT 范畴,不是 OUT_OF_SCOPE;
+  没有更合适的类目时归 UNKNOWN(走澄清)
 - 无法判断 → UNKNOWN(宁可 UNKNOWN,不要猜)
 
 ## 字段要求
 
 - urgency: LOW | MEDIUM | HIGH;scope: INDIVIDUAL | TEAM | ORG
 - onset / deadline:用户明确提到才填,否则留空
-- affected_systems:小写系统名(如 okta / salesforce / vpn / jenkins / tableau / grafana)
+- affected_systems:小写系统标识,只填用户消息中确实提到的系统/应用
+  (如 okta / salesforce / vpn / jenkins / tableau / grafana / email / jira)。
+  时间词("今天")、程度词("特别慢")等不是系统名;拿不准的不填,宁缺毋滥。
+  该字段会被逐字用作服务状态查询参数,填错会查不到任何结果。
 - tried_by_user:用户自述已试过的步骤及其结果,逐条列出
 - requested_resources:仅 category=ACCESS_REQUEST 时填;只能取以下枚举值,
   不在枚举内的资源一律填 other:$resource_enum

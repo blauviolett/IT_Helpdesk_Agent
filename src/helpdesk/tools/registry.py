@@ -98,7 +98,8 @@ TOOLS: dict[str, ToolSpec] = {
         ),
         ToolSpec(
             "search_kb",
-            "BM25 检索知识库;query 为检索词,applies_to 为可选标签过滤",
+            "BM25 检索知识库;query 为英文检索词,applies_to 为可选标签过滤"
+            "(小写系统名或类目名,如 okta / vpn / network_vpn;标签错误会漏检,拿不准就留空)",
             SearchKBParams,
             kb.search_kb,
         ),

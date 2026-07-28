@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 # 三个必填变量段(v3.1 P1-7 冻结):tried_by_user / previous_steps / failure_feedback
 variables:
   [
@@ -27,9 +27,18 @@ variables:
 ## resolution_type 语义
 
 - INFORMATIONAL:已知事故/状态解释了问题,只需告知(如服务事故)。
-- GUIDED:给用户自助操作步骤。
-- ACTION:需要系统侧动作。此时在 intent 字段只提动作意图(如 send_unlock_verification)
-  并给出 rationale;**参数由代码冻结,你不提供、提供也会被忽略**。
+- GUIDED:全部步骤用户都能自己完成时才用。
+- ACTION:方案的关键一步需要系统侧执行、用户自己做不了时(例如触发解锁验证邮件),
+  **必须**选 ACTION:在 intent 字段填准确的动作名(如 send_unlock_verification)并给出
+  rationale;**参数由代码冻结,你不提供、提供也会被忽略**。不得把系统侧动作改写成
+  "请联系 IT / 等待自动解锁"之类的 GUIDED 步骤——那等于放弃本可以当场完成的处置。
+
+当前系统支持的写动作(intent 唯一值域):
+- send_unlock_verification:向用户注册邮箱发送账号解锁验证邮件。**仅适用于**诊断为
+  "账号被锁定"(证据显示账号状态 LOCKED_OUT)的场景;用户无法在登录页自行触发这封
+  邮件,KB 指示"触发解锁验证邮件"时必须选 ACTION 并使用该 intent。
+- 除此之外没有任何系统侧动作可用。诊断与解锁无关时(如 VPN、性能、权限问题),
+  **禁止**提议 ACTION,按情况选 GUIDED 或 INFORMATIONAL。
 
 ## 当前问题
 

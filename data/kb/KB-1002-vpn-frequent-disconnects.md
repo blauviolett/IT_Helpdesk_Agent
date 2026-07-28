@@ -2,7 +2,7 @@
 kb_id: KB-1002
 title: "VPN keeps disconnecting — client-side troubleshooting"
 status: VERIFIED
-applies_to: [vpn, network]
+applies_to: [vpn, network, network_vpn]
 updated: 2026-05-12
 ---
 
