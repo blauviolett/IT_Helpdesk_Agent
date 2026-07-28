@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from helpdesk import perf
 from helpdesk.config import load_policy
 from helpdesk.state.models import CaseState, PendingAction, set_pending_action
 
@@ -34,17 +35,18 @@ _DENY = PolicyVerdict(decision="DENY")  # deny-by-default:未声明 action 的�
 
 def check(action: str, *, policy: dict[str, Any] | None = None) -> PolicyVerdict:
     """按 action 精确匹配规则;无匹配一律 DENY(deny-by-default)。"""
-    policy = policy if policy is not None else load_policy()
-    _validate_rules(policy)
-    for rule in policy.get("rules", []):
-        if rule["action"] == action:
-            return PolicyVerdict(
-                decision=rule["decision"],
-                rule_id=rule["rule_id"],
-                queue=rule.get("queue"),
-                requires_confirm=bool(rule.get("requires_confirm", False)),
-            )
-    return _DENY
+    with perf.span("policy:check", action=action):
+        policy = policy if policy is not None else load_policy()
+        _validate_rules(policy)
+        for rule in policy.get("rules", []):
+            if rule["action"] == action:
+                return PolicyVerdict(
+                    decision=rule["decision"],
+                    rule_id=rule["rule_id"],
+                    queue=rule.get("queue"),
+                    requires_confirm=bool(rule.get("requires_confirm", False)),
+                )
+        return _DENY
 
 
 # ============================================= ActionBuilder(三段协议 ② FREEZE)
@@ -74,6 +76,11 @@ def freeze(state: CaseState, intent: str, *, now: datetime | None = None) -> str
     节点内重试路径,不抛异常 —— 拒绝不是系统错误,不触发 E4)。
     args 由代码冻结:目标恒为会话 actor(运行时注入),永不含 target_user。
     """
+    with perf.span("policy:freeze", intent=intent):
+        return _freeze(state, intent, now=now)
+
+
+def _freeze(state: CaseState, intent: str, *, now: datetime | None = None) -> str | None:
     if intent in state.declined_actions:  # P1-6 前置检查,不可绕过
         return f"用户已明确拒绝过动作 {intent},不得再次提议"
     prompt_text = _CONFIRMABLE_INTENTS.get(intent)

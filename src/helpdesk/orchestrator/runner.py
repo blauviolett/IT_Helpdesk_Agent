@@ -1,12 +1,14 @@
-"""主循环(≤80 行)。E4 承载在此:节点前深拷贝快照,未捕获异常 → 回滚 → 置
-escalation.required → 直升 escalate(SYSTEM_ERROR),不经 decide,永不外泄堆栈。
-resolution_attempts 由本层计数(RESOLVE 分支 +1);elapsed_sec 由本层记账。"""
+"""主循环(业务逻辑 ≤80 行;perf 埋点为纯 profiling 附加)。E4 承载在此:节点前
+深拷贝快照,未捕获异常 → 回滚 → 置 escalation.required → 直升 escalate
+(SYSTEM_ERROR),不经 decide,永不外泄堆栈。resolution_attempts 由本层计数
+(RESOLVE 分支 +1);elapsed_sec 由本层记账。"""
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from helpdesk import perf
 from helpdesk.orchestrator import handlers, transition
 from helpdesk.orchestrator.gates import Branch, decide
 from helpdesk.orchestrator.nodes import clarify, escalate, intake, investigate, resolve
@@ -37,44 +39,56 @@ def handle_message(
     text: str, *, ctx: Ctx, case_id: str | None = None, as_user: str | None = None
 ) -> CaseState:
     started = time.perf_counter()
-    ctx.session_user = as_user
-    state = ctx.store.get(case_id) if case_id else None
-    state, node_name = handlers.ingress(ctx.store, state, text)
-    if as_user and not state.actor.profile_loaded:
-        handlers.load_actor(state, as_user, ctx)
-    if node_name in handlers.RESUME_ENTRIES:  # 等待态恢复:语义分支在 handler 内完成
-        node_name = handlers.resume(state, node_name, ctx)
-    for _ in range(_MAX_HOPS):
-        if node_name is not None:
-            node = NODES[node_name]
-            snapshot = state.model_copy(deep=True)  # §4.3:深拷贝,嵌套结构不可穿透
-            ctx.tracer.event(state.case_id, "node_start", node=node_name)
-            try:
-                node(state, ctx)
-            except Exception as exc:  # noqa: BLE001 — E4:回滚→直升,不经 decide
-                state = snapshot
-                state.escalation.required = True
-                state.escalation.reason_code = ReasonCode.SYSTEM_ERROR
-                ctx.tracer.event(state.case_id, "system_error", node=node_name, error=type(exc).__name__)
-                node_name = "escalate"
-                continue
-            if node_name == "intake":
-                handlers.pre_decide(state)  # checklist 同步 + policy 预写入(E2 输入)
-            transition.apply_post_phase(state, node_name)
-        if transition.is_waiting(state.phase):
-            break
-        decision = decide(state)
-        state.gates, state.confidence = dict(decision.gates), decision.confidence
-        ctx.tracer.event(state.case_id, "decision", branch=decision.branch.value, gates=decision.gates,
-                         reason=decision.reason_code.value if decision.reason_code else None,
-                         confidence=decision.confidence.value)
-        if decision.branch is Branch.RESOLVE:
-            state.resolution_attempts += 1  # guard 节点内重试不经此处,不计数
-        if decision.branch is Branch.ESCALATE:
-            state.escalation.required, state.escalation.reason_code = True, decision.reason_code
-        node_name = transition.on_decision(decision.branch)
-        if node_name is None:
-            break
-    state.budget.elapsed_sec += time.perf_counter() - started  # E5 elapsed:处理时长
-    ctx.store.save(state)
+    collector, perf_token = perf.start()  # profiling only:不参与任何业务判定
+    try:
+        ctx.session_user = as_user
+        state = ctx.store.get(case_id) if case_id else None
+        with perf.span("ingress"):
+            state, node_name = handlers.ingress(ctx.store, state, text)
+        if as_user and not state.actor.profile_loaded:
+            with perf.span("load_actor"):
+                handlers.load_actor(state, as_user, ctx)
+        if node_name in handlers.RESUME_ENTRIES:  # 等待态恢复:语义分支在 handler 内完成
+            with perf.span(f"resume:{node_name}"):
+                node_name = handlers.resume(state, node_name, ctx)
+        for _ in range(_MAX_HOPS):
+            if node_name is not None:
+                node = NODES[node_name]
+                snapshot = state.model_copy(deep=True)  # §4.3:深拷贝,嵌套结构不可穿透
+                ctx.tracer.event(state.case_id, "node_start", node=node_name)
+                try:
+                    with perf.span(f"node:{node_name}"):
+                        node(state, ctx)
+                except Exception as exc:  # noqa: BLE001 — E4:回滚→直升,不经 decide
+                    state = snapshot
+                    state.escalation.required = True
+                    state.escalation.reason_code = ReasonCode.SYSTEM_ERROR
+                    ctx.tracer.event(state.case_id, "system_error", node=node_name, error=type(exc).__name__)
+                    node_name = "escalate"
+                    continue
+                if node_name == "intake":
+                    with perf.span("pre_decide"):
+                        handlers.pre_decide(state)  # checklist 同步 + policy 预写入(E2 输入)
+                transition.apply_post_phase(state, node_name)
+            if transition.is_waiting(state.phase):
+                break
+            with perf.span("decide"):
+                decision = decide(state)
+            state.gates, state.confidence = dict(decision.gates), decision.confidence
+            ctx.tracer.event(state.case_id, "decision", branch=decision.branch.value, gates=decision.gates,
+                             reason=decision.reason_code.value if decision.reason_code else None,
+                             confidence=decision.confidence.value)
+            if decision.branch is Branch.RESOLVE:
+                state.resolution_attempts += 1  # guard 节点内重试不经此处,不计数
+            if decision.branch is Branch.ESCALATE:
+                state.escalation.required, state.escalation.reason_code = True, decision.reason_code
+            node_name = transition.on_decision(decision.branch)
+            if node_name is None:
+                break
+        state.budget.elapsed_sec += time.perf_counter() - started  # E5 elapsed:处理时长
+        ctx.store.save(state)
+    finally:
+        perf.stop(perf_token)
+    ctx.tracer.event(state.case_id, "perf_profile", turn=state.turn_count,
+                     total_ms=collector.total_ms(), spans=collector.spans)
     return state

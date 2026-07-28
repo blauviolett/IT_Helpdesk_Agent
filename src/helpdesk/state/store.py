@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
+from helpdesk import perf
 from helpdesk.state.models import CaseState
 
 _SCHEMA = """
@@ -35,18 +36,20 @@ class SQLiteStore:
         self._conn.commit()
 
     def save(self, state: CaseState) -> None:
-        state.updated_at = datetime.now(timezone.utc)
-        self._conn.execute(
-            "INSERT OR REPLACE INTO cases (case_id, state_json, updated_at) VALUES (?, ?, ?)",
-            (state.case_id, state.model_dump_json(), state.updated_at.isoformat()),
-        )
-        self._conn.commit()
+        with perf.span("sqlite:save"):
+            state.updated_at = datetime.now(timezone.utc)
+            self._conn.execute(
+                "INSERT OR REPLACE INTO cases (case_id, state_json, updated_at) VALUES (?, ?, ?)",
+                (state.case_id, state.model_dump_json(), state.updated_at.isoformat()),
+            )
+            self._conn.commit()
 
     def get(self, case_id: str) -> CaseState | None:
-        row = self._conn.execute(
-            "SELECT state_json FROM cases WHERE case_id = ?", (case_id,)
-        ).fetchone()
-        return CaseState.model_validate_json(row[0]) if row else None
+        with perf.span("sqlite:get"):
+            row = self._conn.execute(
+                "SELECT state_json FROM cases WHERE case_id = ?", (case_id,)
+            ).fetchone()
+            return CaseState.model_validate_json(row[0]) if row else None
 
     def close(self) -> None:
         self._conn.close()

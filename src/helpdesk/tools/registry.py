@@ -24,7 +24,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, ValidationError, field_validator
 
-from helpdesk import policy
+from helpdesk import perf, policy
 from helpdesk.config import load_categories
 from helpdesk.orchestrator.budget import over_budget
 from helpdesk.state.models import (
@@ -162,6 +162,19 @@ def execute(
     或非法 args 走 ERROR 信封,不抛异常(不触发 E4)。invoked_by="system" 仅由
     act / escalate 代码路径传入,模型驱动的调用永远走默认值。
     """
+    # perf 埋点覆盖全链路(门控 + 校验 + adapter + 落账),纯计时不改行为
+    with perf.span(f"tool:{tool_name}", invoked_by=invoked_by):
+        return _execute(state, tool_name, args, ctx, invoked_by=invoked_by)
+
+
+def _execute(
+    state: CaseState,
+    tool_name: str,
+    args: dict[str, Any] | None,
+    ctx: Any,
+    *,
+    invoked_by: str,
+) -> ToolResult:
     tracer, runtime = ctx.tracer, ctx.runtime
     spec = TOOLS.get(tool_name)
     if spec is None:

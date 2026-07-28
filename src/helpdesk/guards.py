@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from helpdesk import perf
+
 if TYPE_CHECKING:
     from helpdesk.state.models import CaseState, DiagnosisStep
 
@@ -152,6 +154,16 @@ def output_guard(
     3. GENERIC 规则:无引用步骤是通用建议,允许存在,但全部步骤都无有效引用时
        不能单独构成"已解决"(v2.1 D10)。
     """
+    with perf.span("output_guard", steps=len(steps)):
+        return _output_guard(state, steps, kb_status=kb_status)
+
+
+def _output_guard(
+    state: CaseState,
+    steps: list[DiagnosisStep],
+    *,
+    kb_status: dict[str, str] | None = None,
+) -> list[str]:
     if kb_status is None:
         from helpdesk.tools.retrieval import get_retriever  # 延迟导入,便于测试注入
 

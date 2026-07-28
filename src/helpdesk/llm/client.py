@@ -10,6 +10,7 @@ from typing import Protocol, TypeVar
 
 from pydantic import BaseModel
 
+from helpdesk import perf
 from helpdesk.config import Settings, get_settings
 from helpdesk.state.models import Budget
 
@@ -65,11 +66,12 @@ class OpenAIClient:
         self, node: str, prompt: str, schema: type[M], *, tier: str = "MAIN", budget: Budget | None = None
     ) -> M:
         model = self._model(tier)
-        rsp = self._client.beta.chat.completions.parse(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            response_format=schema,
-        )
+        with perf.span("llm_api", node=node, tier=tier, model=model, mode="structured"):
+            rsp = self._client.beta.chat.completions.parse(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format=schema,
+            )
         self._bill(budget, model, rsp.usage)
         parsed = rsp.choices[0].message.parsed
         assert parsed is not None, f"structured parse failed for node {node}"
@@ -79,8 +81,9 @@ class OpenAIClient:
         self, node: str, prompt: str, *, tier: str = "MAIN", budget: Budget | None = None
     ) -> str:
         model = self._model(tier)
-        rsp = self._client.chat.completions.create(
-            model=model, messages=[{"role": "user", "content": prompt}]
-        )
+        with perf.span("llm_api", node=node, tier=tier, model=model, mode="text"):
+            rsp = self._client.chat.completions.create(
+                model=model, messages=[{"role": "user", "content": prompt}]
+            )
         self._bill(budget, model, rsp.usage)
         return rsp.choices[0].message.content or ""

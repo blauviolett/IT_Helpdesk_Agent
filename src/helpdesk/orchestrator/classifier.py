@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from helpdesk import perf
 from helpdesk.guards import contains_anchored, has_question_marker
 
 # confirm(AWAITING_CONFIRM):YES | NO | OTHER
@@ -75,41 +76,44 @@ FAILED_ANCHORS: tuple[str, ...] = (
 
 def classify_confirm(text: str, llm: Any = None, budget: Any = None) -> str:
     """三分:YES / NO / OTHER。规则 3:疑问("发吧?")不判 YES,落 OTHER。"""
-    if has_question_marker(text):
-        return "OTHER"
-    if contains_anchored(text, NO_ANCHORS, negation_prefixes=()):
-        return "NO"  # 否定词表自身不再做否定否决("不用发"→ NO)
-    if contains_anchored(text, YES_ANCHORS):
-        return "YES"
-    return _small_fallback(
-        llm, "confirm", text, ("YES", "NO", "OTHER"), default="OTHER", budget=budget
-    )
+    with perf.span("classifier:confirm"):
+        if has_question_marker(text):
+            return "OTHER"
+        if contains_anchored(text, NO_ANCHORS, negation_prefixes=()):
+            return "NO"  # 否定词表自身不再做否定否决("不用发"→ NO)
+        if contains_anchored(text, YES_ANCHORS):
+            return "YES"
+        return _small_fallback(
+            llm, "confirm", text, ("YES", "NO", "OTHER"), default="OTHER", budget=budget
+        )
 
 
 def classify_verify(text: str, llm: Any = None, budget: Any = None) -> str:
     """三态:RESOLVED / FAILED / UNKNOWN。"还没好"/"没好"→ FAILED,"好了吗?"→ UNKNOWN。"""
-    if has_question_marker(text):
-        return "UNKNOWN"
-    if contains_anchored(text, FAILED_ANCHORS, negation_prefixes=()):
-        return "FAILED"
-    if contains_anchored(text, RESOLVED_ANCHORS):
-        return "RESOLVED"
-    return _small_fallback(
-        llm, "verify", text, ("RESOLVED", "FAILED", "UNKNOWN"), default="UNKNOWN", budget=budget
-    )
+    with perf.span("classifier:verify"):
+        if has_question_marker(text):
+            return "UNKNOWN"
+        if contains_anchored(text, FAILED_ANCHORS, negation_prefixes=()):
+            return "FAILED"
+        if contains_anchored(text, RESOLVED_ANCHORS):
+            return "RESOLVED"
+        return _small_fallback(
+            llm, "verify", text, ("RESOLVED", "FAILED", "UNKNOWN"), default="UNKNOWN", budget=budget
+        )
 
 
 def classify_escalated(text: str, llm: Any = None, budget: Any = None) -> str:
     """二分:RESOLVED / OTHER(OTHER → escalate_followup 追加工单评论,phase 不变)。"""
-    if has_question_marker(text):
-        return "OTHER"
-    if contains_anchored(text, FAILED_ANCHORS, negation_prefixes=()):
-        return "OTHER"
-    if contains_anchored(text, RESOLVED_ANCHORS):
-        return "RESOLVED"
-    return _small_fallback(
-        llm, "escalated", text, ("RESOLVED", "OTHER"), default="OTHER", budget=budget
-    )
+    with perf.span("classifier:escalated"):
+        if has_question_marker(text):
+            return "OTHER"
+        if contains_anchored(text, FAILED_ANCHORS, negation_prefixes=()):
+            return "OTHER"
+        if contains_anchored(text, RESOLVED_ANCHORS):
+            return "RESOLVED"
+        return _small_fallback(
+            llm, "escalated", text, ("RESOLVED", "OTHER"), default="OTHER", budget=budget
+        )
 
 
 _SMALL_PROMPT = """你是 IT Helpdesk 的短文本分类器。对用户消息做 {kind} 分类。
