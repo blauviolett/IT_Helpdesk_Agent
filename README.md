@@ -287,6 +287,16 @@ Declared up front — these are deliberate scope cuts, not oversights:
 - `confidence` (HIGH/LOW) affects wording and disclosure only; it is
   deliberately excluded from safety decisions (no weighted scores, no
   threshold bands).
+- **Resource-enum mapping is LLM-side** (per the frozen P1-4 chain: the enum +
+  aliases are injected into intake's prompt; the model outputs enum keys or
+  `other`). Terse phrasings ("帮我开通 snowflake 生产库权限") can flake into an
+  empty `requested_resources`, in which case E2 is unreachable and the case
+  degrades to a LOW_CONFIDENCE escalation on the generic queue instead of the
+  approver queue. Found in the fresh-clone smoke test; the golden phrasing
+  passes consistently. **Never an unauthorized grant** — deny-by-default means
+  a missed mapping only worsens routing, not safety. A deterministic
+  alias-matching fallback in code would close it but extends the frozen
+  contract chain, so it stays a documented gap pending a design revision.
 
 ## 9. What I'd improve with more time
 

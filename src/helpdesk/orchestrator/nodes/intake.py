@@ -30,13 +30,19 @@ class IntakeOutput(BaseModel):
 
 
 def run_intake(state: CaseState, ctx: Any) -> None:
-    resource_enum = [*load_policy()["resources"].keys(), "other"]
+    resources = load_policy()["resources"]
+    resource_enum = [*resources.keys(), "other"]
+    # 枚举连同 aliases 注入(P1-4 匹配面):模型靠别名把口语映射到枚举键
+    enum_desc = "; ".join(
+        f"{name}(别名:{', '.join(spec.get('aliases', []) or ['—'])})"
+        for name, spec in resources.items()
+    ) + ";other(不在上述枚举内的资源)"
     prompt = render_prompt(
         "intake",
         verbatim=state.issue.verbatim,
         messages=recent_messages(state),
         categories=", ".join(c.value for c in Category),
-        resource_enum=", ".join(resource_enum),
+        resource_enum=enum_desc,
     )
     out = ctx.llm.complete_structured("intake", prompt, IntakeOutput, budget=state.budget)
 

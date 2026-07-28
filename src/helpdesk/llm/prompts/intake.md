@@ -31,8 +31,9 @@ $categories
   时间词("今天")、程度词("特别慢")等不是系统名;拿不准的不填,宁缺毋滥。
   该字段会被逐字用作服务状态查询参数,填错会查不到任何结果。
 - tried_by_user:用户自述已试过的步骤及其结果,逐条列出
-- requested_resources:仅 category=ACCESS_REQUEST 时填;只能取以下枚举值,
-  不在枚举内的资源一律填 other:$resource_enum
+- requested_resources:category=ACCESS_REQUEST 时**必填**——把用户请求的每一项资源
+  逐个映射到枚举键(按别名匹配),确实不在枚举内的才填 other;漏填 = 权限申请丢失,
+  禁止输出空列表。枚举:$resource_enum
 
 ## 用户原话
 
