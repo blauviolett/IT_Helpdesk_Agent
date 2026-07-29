@@ -1,5 +1,6 @@
 # 过程文档不进仓库(交付文档 Requirements/final_design/demo_script 正常提交)
 docs/mvp_plan*.md
+docs/final_design.md
 docs/review.md
 docs/architecture.md
 docs/implementation_guide.md
@@ -15,4 +16,6 @@ __pycache__/
 .pytest_cache/
 eval/results/*
 !eval/results/latest.md
+
+helpdesk.db
 *.db
